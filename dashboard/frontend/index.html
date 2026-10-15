@@ -177,10 +177,27 @@
           <label class="switch" style="flex:1"><input type="checkbox" id="aiAuto"><b>AI Auto-Trade</b>&nbsp;<span class="muted">ให้ AI วิเคราะห์และส่งออเดอร์เอง</span></label>
           <div style="max-width:110px"><label>ทุก (นาที)</label><input type="number" id="aiInt" min="1"></div>
           <div style="max-width:120px"><label>ความมั่นใจ ≥</label><input type="number" id="aiConf" min="0" max="100"></div>
+          <div style="max-width:150px"><label>Liquidity Sweep check</label><select id="aiLiq"><option value="block">บล็อกแผนที่สวน sweep</option><option value="warn">เตือนอย่างเดียว</option><option value="off">ปิด</option></select></div>
+          <div style="max-width:120px"><label>ยกเลิก Limit (นาที)</label><input type="number" id="aiExp" min="0"></div>
           <div class="actions"><button class="btn sm" id="aiSave">บันทึก</button></div>
         </div>
         <div class="muted" style="font-size:12px" id="aiAutoInfo"></div>
+        <div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px">
+          <div class="row" style="justify-content:space-between;align-items:center"><b>ความแม่นยำของ AI (ให้คะแนนทุกแผนจากราคาจริง)</b><button class="btn sm" id="aiJrRefresh">รีเฟรช</button></div>
+          <div class="muted" style="font-size:12px" id="aiJrInfo"></div>
+          <div id="aiJrConf" class="mt"></div>
+          <div id="aiJrRecent" class="mt"></div>
+        </div>
       </div>
+    </div>
+    <div class="card mt" id="lanesCard">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <h3 style="margin:0">เลน (Lanes) – Shadow / Live</h3><button class="btn sm" id="lnRefresh">รีเฟรช</button>
+      </div>
+      <div class="muted" style="font-size:12px">ทุกเลนมีโควตาของตัวเอง · <b>Shadow</b> = วิเคราะห์และให้คะแนนจากราคาจริง ไม่ส่งออเดอร์ · <b>Live</b> = ส่งออเดอร์จริง ·
+        เปลี่ยนโหมดที่ตาราง Scanner (หน้า Risk & Settings) · แนะนำเปิด Live เมื่อ Shadow ได้ผลบวกอย่างน้อย 30 แผน</div>
+      <div id="lnInfo" class="muted mt" style="font-size:12px"></div>
+      <div id="lnTable" class="mt"></div>
     </div>
     <div class="card mt" id="newsCard">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
@@ -314,6 +331,14 @@
           <div><label>ขาดทุนสูงสุดต่อวัน ($, 0 = ไม่ใช้)</label><input type="number" step="1" id="rDayMoney"></div>
           <div><label>จำนวนออเดอร์สูงสุด / วัน</label><input type="number" id="rMaxOrders"></div>
           <div><label>Position เปิดพร้อมกันสูงสุด</label><input type="number" id="rMaxPos"></div>
+          <div><label>ไม้ทิศเดียวกันสูงสุด (ออเดอร์มือ, 0 = ไม่จำกัด)</label><input type="number" id="rSameSide"></div>
+          <div><label>เว้นระยะเข้าทิศเดียวกัน (ออเดอร์มือ, นาที)</label><input type="number" id="rSameCool"></div>
+          <div style="grid-column:1/-1" class="muted">เลน (แต่ละกลยุทธ์ + AI มีโควตาของตัวเอง ไม่บล็อกกัน)</div>
+          <div><label>ไม้พร้อมกันต่อเลน</label><input type="number" id="rLaneMax"></div>
+          <div><label>เว้นระยะต่อเลน (นาที)</label><input type="number" id="rLaneCool"></div>
+          <div><label>ออเดอร์/วัน ต่อเลน</label><input type="number" id="rLaneOrders"></div>
+          <div><label>ขาดทุน/วัน ต่อเลน (%)</label><input type="number" step="0.1" id="rLaneLoss"></div>
+          <div><label>ความเสี่ยงรวมที่เปิดอยู่สูงสุด (% ของพอร์ต)</label><input type="number" step="0.5" id="rTotRisk"></div>
           <div><label>Spread สูงสุด (ราคา)</label><input type="number" step="0.01" id="rSpread"></div>
           <div style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end">
             <label class="switch"><input type="checkbox" id="rReqSl">บังคับใส่ SL</label>
@@ -329,10 +354,18 @@
           <label class="switch"><input type="checkbox" id="scEnabled">เปิด Scanner</label>
           <div style="max-width:140px"><label>ทุก ๆ (วินาที)</label><input type="number" id="scInt"></div>
         </div>
-        <table class="mt"><thead><tr><th>กลยุทธ์</th><th>สแกน</th><th>Auto-trade</th></tr></thead><tbody id="scTable"></tbody></table>
+        <table class="mt"><thead><tr><th>กลยุทธ์ (เลน)</th><th>สแกน = Shadow</th><th>+ Auto-trade = Live</th></tr></thead><tbody id="scTable"></tbody></table>
         <label class="switch mt"><input type="checkbox" id="scRegime">กรองกลยุทธ์ตามสภาวะตลาด (เทรนด์/ไซด์เวย์/ผันผวน)</label>
         <label class="switch mt"><input type="checkbox" id="scAuto"><b>เปิด Auto-Trade</b>&nbsp;<span class="muted">(ส่งออเดอร์จริงตามสัญญาณ ผ่านกฎความเสี่ยงทุกครั้ง)</span></label>
         <button class="btn primary mt" id="scSave">บันทึก</button> <span id="scMsg"></span>
+        <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">
+          <b>Symbol เพิ่มเติม</b> <span class="muted" style="font-size:12px">(เช่น BTCUSD – แต่ละกลยุทธ์เป็นเลนของตัวเอง ใช้กฎระดับบัญชีร่วมกับทอง · Trade Manager ยังไม่จัดการ Symbol เพิ่มเติม)</span>
+          <div id="symBox" class="mt"></div>
+          <div class="row mt" style="align-items:flex-end">
+            <div style="max-width:160px"><label>เพิ่ม Symbol</label><input id="symNew" placeholder="BTCUSD"></div>
+            <div class="actions"><button class="btn sm" id="symAdd">เพิ่ม</button></div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="card mt" id="tmCard">
@@ -375,10 +408,10 @@
           <div><label>Asian Session เริ่ม (ชม. server)</label><input type="number" id="stAs"></div>
           <div><label>Asian Session จบ</label><input type="number" id="stAe"></div>
           <div style="grid-column:1/-1"><label>AI ที่ใช้วิเคราะห์ / AI Auto-Trade</label><select id="stProv"><option value="anthropic">Claude (Anthropic)</option><option value="openai">ChatGPT (OpenAI)</option></select></div>
-          <div><label>Anthropic API Key</label><input type="password" id="stKey" placeholder="sk-ant-..."></div>
+          <div><label>Anthropic API Key</label><div style="display:flex;gap:6px"><input type="password" id="stKey" placeholder="sk-ant-..." autocomplete="new-password" style="flex:1"><button class="btn sm" type="button" data-clear-key="anthropic_api_key">ลบ Key</button></div></div>
           <div><label>Claude Model</label><input id="stModel"></div>
           <div style="grid-column:1/-1"><label>Anthropic Workspace ID (ใส่เมื่อ Key ไม่ได้ผูกกับ workspace – ขึ้นต้นด้วย wrkspc_)</label><input id="stWs" placeholder="wrkspc_..."></div>
-          <div><label>OpenAI API Key</label><input type="password" id="stOKey" placeholder="sk-..."></div>
+          <div><label>OpenAI API Key</label><div style="display:flex;gap:6px"><input type="password" id="stOKey" placeholder="sk-..." autocomplete="new-password" style="flex:1"><button class="btn sm" type="button" data-clear-key="openai_api_key">ลบ Key</button></div></div>
           <div><label>ChatGPT Model</label><input id="stOModel"></div>
           <div style="grid-column:1/-1"><label>บันทึกถึง AI (ข่าว/เหตุการณ์วันนี้ เช่น "CPI สหรัฐ 19:30 ไทย", "FOMC คืนนี้ ห้ามเปิดก่อนข่าว")</label><textarea id="stNews" rows="2"></textarea></div>
         </div>

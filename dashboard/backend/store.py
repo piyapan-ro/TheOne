@@ -33,6 +33,14 @@ DEFAULTS = {
         "max_daily_loss_money": 0.0,    # 0 = use % only
         "max_orders_per_day": 20,
         "max_open_positions": 3,
+        "max_same_side": 1,             # MANUAL Dashboard orders open in the SAME direction at once (0 = no limit)
+        "same_side_cooldown_min": 15,   # no new manual order in the same direction within N minutes of the last one
+        # lanes: every strategy and the AI trade with their OWN quota, so one cannot block another
+        "lane_max_positions": 1,        # open + pending per lane
+        "lane_cooldown_min": 15,        # minutes between two entries of the same lane
+        "lane_max_orders_day": 6,       # entries per lane per server day
+        "lane_max_daily_loss_pct": 6.0, # a lane stops for the day after losing this % of the balance
+        "max_total_open_risk_pct": 12.0,  # sum of SL risk of all open/pending positions (all lanes + manual)
         "max_spread": 0.80,             # in price units ($ for gold)
         "require_sl": True,
         "auto_kill_on_daily_loss": True,
@@ -59,10 +67,14 @@ DEFAULTS = {
         "auto_trade_strategies": {
             "SMC": False, "SND": False, "EMA": False, "BB": False, "ASIA": False, "AIPB": False
         },
+        "ai_liquidity_mode": "block",   # AI plan against a fresh liquidity sweep: block | warn | off
+        "ai_limit_expiry_min": 15,      # AI LIMIT/STOP orders not filled within N minutes are cancelled
     },
     "strategy_params": {},              # per-strategy overrides applied from the Optimizer
     "optimizer": {"history": []},       # applied changes (for rollback)
-    "notes": {}
+    "notes": {},
+    "runtime": {"traded": [], "partial_done": []},
+    "symbols": {},                       # extra symbols (e.g. BTCUSD) - see symbols.py  # survives restarts: signals already traded, partial TPs done
 }
 
 _lock = threading.RLock()
@@ -81,26 +93,67 @@ def _merge(default, current):
     return out
 
 
+_last_good = {}  # name -> last successfully read/written data (used if the file becomes unreadable)
+
+
+def _read(p):
+    with open(p, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def load(name):
     with _lock:
         default = DEFAULTS.get(name, {})
         p = _path(name)
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    return _merge(default, json.load(f))
-            except Exception:
-                pass
-        return deepcopy(default)
+        if not os.path.exists(p):
+            return deepcopy(default)
+        try:
+            data = _read(p)
+            _last_good[name] = deepcopy(data)
+            return _merge(default, data)
+        except Exception as e:
+            print(f"[STORE] cannot read {p}: {e!r}")
+        # unreadable file: never silently fall back to defaults (that would e.g. release an active Kill Switch)
+        if name in _last_good:
+            return _merge(default, deepcopy(_last_good[name]))
+        try:
+            data = _read(p + ".bak")
+            print(f"[STORE] using backup {p}.bak")
+            _last_good[name] = deepcopy(data)
+            return _merge(default, data)
+        except Exception:
+            pass
+        out = deepcopy(default)
+        if name == "risk":  # fail safe: refuse new orders until the user saves the risk settings again
+            out["load_error"] = "อ่านไฟล์ risk.json ไม่ได้ – เปิดหน้า Risk & Settings ตรวจกฎความเสี่ยงแล้วกดบันทึก"
+        return out
 
 
 def save(name, data):
     with _lock:
-        tmp = _path(name) + ".tmp"
+        if name == "risk" and isinstance(data, dict):
+            data.pop("load_error", None)  # transient flag, never written to disk
+        p = _path(name)
+        tmp = p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, _path(name))
+        if os.path.exists(p):
+            try:
+                _read(p)  # keep the previous version only if it is valid JSON
+                os.replace(p, p + ".bak")
+            except Exception:
+                pass
+        os.replace(tmp, p)
+        _last_good[name] = deepcopy(data)
         return data
+
+
+def modify(name, fn):
+    """Atomic load -> fn(data) -> save (fn edits data in place). Prevents lost updates between threads."""
+    with _lock:
+        data = load(name)
+        fn(data)
+        return save(name, data)
 
 
 def update(name, patch):

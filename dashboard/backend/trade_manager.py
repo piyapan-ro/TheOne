@@ -49,8 +49,16 @@ class TradeManager:
         self.get_settings = get_settings
         self.log = log
         self._atr = {"t": 0, "v": None}
-        self.partial_done = set()
+        # tickets already partially closed - persisted so a restart does not close part of them again
+        self.partial_done = set(store.load("runtime").get("partial_done", []))
         self.last_action = {}
+
+    def _mark_partial(self, ticket):
+        self.partial_done.add(ticket)
+        open_ = {p["ticket"] for p in self.broker.positions()} | {ticket}
+        self.partial_done &= open_  # forget closed positions so the file stays small
+        keep = sorted(self.partial_done)
+        store.modify("runtime", lambda d: d.update(partial_done=keep))
 
     def atr(self, cfg):
         if time.time() - self._atr["t"] > 30 or self._atr["v"] is None:
@@ -93,7 +101,7 @@ class TradeManager:
             step = info.get("volume_step") or 0.01
             vmin = info.get("volume_min") or 0.01
             vol = math.floor(p["volume"] * cfg["partial_pct"] / 100 / step + 1e-9) * step
-            self.partial_done.add(p["ticket"])
+            self._mark_partial(p["ticket"])
             if vol >= vmin and p["volume"] - vol >= vmin - 1e-9:
                 r = self.broker.close_position(p["ticket"], volume=round(vol, 2), comment="partial TP")
                 self.log(f"Partial TP #{p['ticket']} ปิด {vol:.2f} lot ที่กำไร {fav:.2f} -> {r.get('message')}")

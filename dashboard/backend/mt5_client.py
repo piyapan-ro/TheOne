@@ -111,6 +111,15 @@ class LiveBroker:
                 [n for n in names if n.upper().startswith("GOLD")]
         return sorted(cands, key=len)[0] if cands else None
 
+    def find_symbol_like(self, preferred):
+        """Broker name of any symbol: exact, else the shortest name starting with it (BTCUSD -> BTCUSDm)."""
+        with self.lock:
+            names = [s.name for s in (mt5.symbols_get() or [])]
+        if preferred in names:
+            return preferred
+        cands = [n for n in names if n.upper().startswith(preferred.upper())]
+        return sorted(cands, key=len)[0] if cands else None
+
     def find_dollar_index(self):
         """DXY / USDX if the broker offers it (not all do)."""
         with self.lock:
@@ -420,6 +429,9 @@ class DemoBroker:
                     "profit": round(fl, 2), "margin": round(margin, 2), "margin_free": round(eq - margin, 2),
                     "margin_level": round(eq / margin * 100, 2) if margin else 0.0,
                     "trade_allowed": True, "trade_expert": True, "is_demo": True}
+
+    def find_symbol_like(self, preferred):
+        return preferred  # the simulator answers for any name (same price series)
 
     def symbol_info(self, symbol):
         return {"name": symbol, "digits": 2, "point": 0.01, "volume_min": 0.01, "volume_max": 100.0,

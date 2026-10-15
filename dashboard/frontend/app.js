@@ -7,9 +7,11 @@ const WD = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."];
 const S = { page: "dash", tf: "M5", side: "BUY", status: null, strategies: {}, dashDays: 90, charts: {}, priceLines: [] };
 
 /* ---------------- helpers ---------------- */
+// API token is put into index.html by the server; every /api call must send it
+const API_TOKEN = (document.querySelector('meta[name="ait-token"]') || {}).content || "";
 async function api(path, opts = {}) {
-  const o = { ...opts };
-  if (o.body && typeof o.body !== "string") { o.body = JSON.stringify(o.body); o.headers = { "content-type": "application/json" }; }
+  const o = { ...opts, headers: { ...(opts.headers || {}), "X-AIT-Token": API_TOKEN } };
+  if (o.body && typeof o.body !== "string") { o.body = JSON.stringify(o.body); o.headers["content-type"] = "application/json"; }
   const r = await fetch("/api/" + path, o);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -42,8 +44,11 @@ function table(cols, rows, empty = "ไม่มีข้อมูล") {
   return `<table><thead><tr>${cols.map((c) => `<th class="${c.n ? "n" : ""}">${c.h}</th>`).join("")}</tr></thead><tbody>${rows
     .map((r) => `<tr>${cols.map((c) => `<td class="${c.n ? "n" : ""} ${c.cls ? c.cls(r) : ""}">${c.f(r)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
 }
-const sideTag = (s) => `<span class="tag ${s === "BUY" ? "buy" : "sell"}">${s}</span>`;
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const sideTag = (s) => `<span class="tag ${s === "BUY" ? "buy" : "sell"}">${esc(s)}</span>`;
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// only http(s) links from external feeds (blocks javascript: URLs)
+const safeUrl = (u) => (/^https?:\/\//i.test(String(u || "")) ? esc(u) : "#");
+const numTxt = (v) => (v === null || v === undefined || v === "" || isNaN(v) ? "—" : esc(Number(v)));
 
 if (window.Chart) {
   Chart.defaults.color = "#8b98a8";
@@ -237,7 +242,7 @@ async function loadTrading() {
     { h: "", f: (p) => `<button class="btn sm danger" data-close="${p.ticket}">ปิด</button>` },
   ], ps, "ไม่มี Position");
   $("#ordTable").innerHTML = table([
-    { h: "Ticket", f: (o) => o.ticket }, { h: "ประเภท", f: (o) => o.type }, { h: "Lot", n: 1, f: (o) => o.volume },
+    { h: "Ticket", f: (o) => o.ticket }, { h: "ประเภท", f: (o) => esc(o.type) }, { h: "Lot", n: 1, f: (o) => o.volume },
     { h: "ราคา", n: 1, f: (o) => money(o.price) }, { h: "SL", n: 1, f: (o) => o.sl ? money(o.sl) : "—" }, { h: "TP", n: 1, f: (o) => o.tp ? money(o.tp) : "—" },
     { h: "", f: (o) => `<button class="btn sm" data-cancel="${o.ticket}">ยกเลิก</button>` },
   ], os, "ไม่มี Pending Order");
@@ -286,7 +291,7 @@ async function runCalc(setLot) {
     const body = { side: S.side, entry: entryPrice(), sl: $("#oSl").value, tp: $("#oTp").value, risk_pct: $("#oRisk").value };
     if (!setLot || S.lotMode === "fixed") body.lot = $("#oLot").value;
     const r = await api("calc", { method: "POST", body });
-    if (r.error) { $("#oCalc").innerHTML = `<div class="neg">${r.error}</div>`; return; }
+    if (r.error) { $("#oCalc").innerHTML = `<div class="neg">${esc(r.error)}</div>`; return; }
     if (setLot) $("#oLot").value = r.lot;
     $("#oCalc").innerHTML = `
       <div><span class="muted">ราคาเข้า</span><span class="num">${money(r.entry)}</span></div>
@@ -305,7 +310,7 @@ $("#oSend").addEventListener("click", (e) => {
     $("#oMsg").innerHTML = "";
     try {
       const r = await api("order", { method: "POST", body: { side: S.side, kind, volume: lot, price: $("#oPrice").value, sl: $("#oSl").value, tp: $("#oTp").value, strategy: $("#oStrat").value } });
-      $("#oMsg").innerHTML = `<div class="ok">✓ ${esc(r.message)} #${r.order}</div>`; loadTrading();
+      $("#oMsg").innerHTML = `<div class="ok">✓ ${esc(r.message)} #${esc(r.order)}</div>`; loadTrading();
     } catch (err) { $("#oMsg").innerHTML = `<div class="err">✗ ${esc(err.message)}</div>`; }
   });
 });
@@ -346,14 +351,14 @@ async function loadJournal() {
     { h: "เปิด", f: (t) => ftime(t.open_time) }, { h: "ฝั่ง", f: (t) => sideTag(t.side) }, { h: "Lot", n: 1, f: (t) => t.volume },
     { h: "ราคาเปิด", n: 1, f: (t) => money(t.open_price) }, { h: "ปิด", f: (t) => ftime(t.close_time) }, { h: "ราคาปิด", n: 1, f: (t) => t.close_price ? money(t.close_price) : "—" },
     { h: "ระยะ ($)", n: 1, f: (t) => t.points ?? "—", cls: (t) => cls(t.points) }, { h: "กำไร", n: 1, f: (t) => t.status === "open" ? "เปิดอยู่" : signed(t.profit), cls: (t) => cls(t.profit) },
-    { h: "ที่มา", f: (t) => `<span class="tag">${esc(t.source)}</span>` }, { h: "กลยุทธ์", f: (t) => esc(t.strategy) }, { h: "ออกโดย", f: (t) => t.exit_reason },
+    { h: "ที่มา", f: (t) => `<span class="tag">${esc(t.source)}</span>` }, { h: "กลยุทธ์", f: (t) => esc(t.strategy) }, { h: "ออกโดย", f: (t) => esc(t.exit_reason) },
     { h: "นาน (นาที)", n: 1, f: (t) => t.duration_min ?? "—" },
     { h: "โน้ต", f: (t) => `<input class="note-in" data-note="${t.position_id}" value="${esc(t.note)}" placeholder="+ โน้ต">` },
   ], d.trades, "ไม่พบออเดอร์ตามเงื่อนไข");
 }
 $("#jApply").addEventListener("click", loadJournal);
 $("#jReset").addEventListener("click", () => { ["#jFrom", "#jTo", "#jH1", "#jH2", "#jSource", "#jStrat", "#jSide", "#jRes"].forEach((i) => ($(i).value = "")); loadJournal(); });
-$("#jCsv").addEventListener("click", () => { window.location.href = "/api/journal.csv?" + jQuery(); });
+$("#jCsv").addEventListener("click", () => { window.location.href = "/api/journal.csv?" + jQuery() + "&token=" + encodeURIComponent(API_TOKEN); });
 document.addEventListener("change", async (e) => {
   const n = e.target.closest("[data-note]");
   if (n) { await api(`journal/${n.dataset.note}/note`, { method: "POST", body: { note: n.value } }); toast("บันทึกโน้ตแล้ว"); }
@@ -367,7 +372,7 @@ async function loadSignals() {
     <div class="why">SL ${money(s.sl)} · TP ${money(s.tp)} · ${esc(s.reason)}</div></div><button class="btn sm" data-use='${esc(JSON.stringify(s))}'>ใช้</button></div>`;
   $("#sigLatest").innerHTML = d.latest.length ? d.latest.map(row).join("") : `<div class="empty">ยังไม่มีสัญญาณใหม่ใน 2 แท่งล่าสุด – Scanner ทำงานอยู่เบื้องหลัง</div>`;
   $("#sigHistory").innerHTML = table([
-    { h: "แท่ง", f: (s) => ftime(s.time) }, { h: "กลยุทธ์", f: (s) => s.strategy }, { h: "ฝั่ง", f: (s) => sideTag(s.side) },
+    { h: "แท่ง", f: (s) => ftime(s.time) }, { h: "กลยุทธ์", f: (s) => esc(s.strategy) }, { h: "ฝั่ง", f: (s) => sideTag(s.side) },
     { h: "Entry", n: 1, f: (s) => money(s.entry) }, { h: "SL", n: 1, f: (s) => money(s.sl) }, { h: "TP", n: 1, f: (s) => money(s.tp) },
     { h: "", f: (s) => `<button class="btn sm" data-use='${esc(JSON.stringify(s))}'>ใช้</button>` },
   ], d.history, "ยังไม่มีประวัติสัญญาณในเซสชันนี้");
@@ -426,11 +431,13 @@ function showPlan(p) {
   if (!p) { $("#aiPlan").style.display = "none"; $("#aiPlanRow").style.display = "none"; return; }
   $("#aiPlan").style.display = "block";
   const act = p.action === "BUY" ? '<b class="pos">BUY</b>' : p.action === "SELL" ? '<b class="neg">SELL</b>' : '<b>WAIT</b>';
-  $("#aiPlan").innerHTML = `<div><span class="muted">แผน AI (${p.source === "rules" ? "จากกฎ" : p.source === "openai" ? "ChatGPT" : "Claude"})</span><span>${act} ${p.action !== "WAIT" ? p.order_type : ""}</span></div>` +
+  $("#aiPlan").innerHTML = `<div><span class="muted">แผน AI (${p.source === "rules" ? "จากกฎ" : p.source === "openai" ? "ChatGPT" : "Claude"})</span><span>${act} ${p.action !== "WAIT" ? esc(p.order_type) : ""}</span></div>` +
     (p.action !== "WAIT" ? `<div><span class="muted">เข้า</span><span class="num">${p.entry ? money(p.entry) : "Market ≈ " + money(p.entry_ref)}</span></div>
-     <div><span class="muted">SL / TP</span><span class="num">${money(p.sl)} / ${p.tp ? money(p.tp) : "—"}${p.rr ? ` (R:R 1:${p.rr})` : ""}</span></div>
-     <div><span class="muted">ความมั่นใจ</span><span class="num">${p.confidence}%</span></div>` : "") +
+     <div><span class="muted">SL / TP</span><span class="num">${money(p.sl)} / ${p.tp ? money(p.tp) : "—"}${p.rr ? ` (R:R 1:${numTxt(p.rr)})` : ""}</span></div>
+     <div><span class="muted">ความมั่นใจ</span><span class="num">${numTxt(p.confidence)}%</span></div>` : "") +
     `<div style="display:block;color:var(--muted);font-size:12px;margin-top:4px">${esc(p.reason || "")}${p.problem ? ` · <span class="neg">${esc(p.problem)}</span>` : ""}</div>`;
+  const extra = [...(p.liq_notes || []).filter((n) => !n.startsWith("⚠")), ...(p.warnings || [])];
+  if (extra.length) $("#aiPlan").innerHTML += `<div style="display:block;font-size:12px;margin-top:4px">${extra.map((n) => `<div class="${n.startsWith("⚠") ? "neg" : "muted"}">💧 ${esc(n)}</div>`).join("")}</div>`;
   const can = p.action !== "WAIT" && p.valid;
   $("#aiPlanRow").style.display = can ? "flex" : "none";
   if (can) { $("#aiExec").className = "btn " + (p.action === "BUY" ? "buy" : "sell"); $("#aiExec").textContent = `ส่งออเดอร์ ${p.action} ตามแผน AI`; $("#aiExec").style.flex = "1"; }
@@ -447,23 +454,63 @@ $("#aiBtn").addEventListener("click", async () => {
 $("#aiExec").addEventListener("click", (e) => confirmClick(e.currentTarget, "ยืนยันส่งออเดอร์?", async () => {
   try {
     const r = await api("ai/execute", { method: "POST", body: { plan: S.aiPlan } });
-    $("#aiExecMsg").innerHTML = `<div class="ok">✓ ${esc(r.message)} #${r.order}</div>`;
+    $("#aiExecMsg").innerHTML = `<div class="ok">✓ ${esc(r.message)} #${esc(r.order)}</div>`;
   } catch (err) { $("#aiExecMsg").innerHTML = `<div class="err">✗ ${esc(err.message)}</div>`; }
 }));
 async function loadAIState() {
   const s = await api("ai/state");
   $("#aiAuto").checked = s.ai_auto; $("#aiInt").value = s.interval_min; $("#aiConf").value = s.min_conf;
+  $("#aiLiq").value = s.liquidity_mode || "block"; $("#aiExp").value = s.limit_expiry_min ?? 15;
+  loadAIJournal().catch(() => {});
   try { const rg = await api("regime"); $("#aiAutoInfo").dataset.reg = rg.label; } catch (e) {}
   $("#aiAutoInfo").innerHTML = (s.has_key ? `ใช้ ${s.provider === "openai" ? "ChatGPT" : "Claude"} วิเคราะห์` : "ยังไม่มี API Key → ใช้แผนจากกฎ (ใส่ Key ได้ที่ Risk & Settings)") +
-    (s.last_run ? ` · ครั้งล่าสุด ${new Date(s.last_run * 1000).toLocaleTimeString()}: ${s.last ? s.last.action + (s.last.confidence ? " " + s.last.confidence + "%" : "") : "-"}` : "") +
+    (s.last_run ? ` · ครั้งล่าสุด ${new Date(s.last_run * 1000).toLocaleTimeString()}: ${s.last ? esc(s.last.action) + (s.last.confidence ? " " + numTxt(s.last.confidence) + "%" : "") : "-"}` : "") +
     ` · ผลการส่งดูได้ที่หน้า Risk → Auto-Trade ล่าสุด`;
   if (s.last && !S.aiPlan) showPlan(s.last);
 }
 $("#aiSave").addEventListener("click", async () => {
-  await api("settings", { method: "POST", body: { scanner: { ai_auto: $("#aiAuto").checked, ai_interval_min: Math.max(1, +$("#aiInt").value || 15), ai_min_conf: +$("#aiConf").value || 65 } } });
+  await api("settings", { method: "POST", body: { scanner: { ai_auto: $("#aiAuto").checked, ai_interval_min: Math.max(1, +$("#aiInt").value || 15), ai_min_conf: +$("#aiConf").value || 65, ai_liquidity_mode: $("#aiLiq").value, ai_limit_expiry_min: Math.max(0, +$("#aiExp").value || 0) } } });
   toast("บันทึก AI Auto-Trade แล้ว"); loadAIState(); refreshAutoBadge();
 });
-async function loadAI() { await Promise.all([loadSignals(), loadAIState(), loadNews(), loadPerf(), runBacktest(), loadOptimizer(), runGiveBack()]); }
+async function loadAIJournal() {
+  const d = await api("ai/journal?days=30&limit=15"), s = d.stats;
+  const fmtR = (v) => (v === null || v === undefined ? "—" : `<span class="${cls(v)}">${signed(v, 2)}R</span>`);
+  const a = s.all;
+  $("#aiJrInfo").innerHTML = `30 วัน: ${s.total_plans} แผน (WAIT ${s.wait}) · ปิดผลแล้ว ${a.n} · ชนะ ${a.win_rate ?? "—"}% · เฉลี่ย ${fmtR(a.avg_r)} · รอผล ${s.open} · Limit ไม่ถึงราคา ${s.expired}` +
+    (s.suggested_min_conf ? ` · <b>แนะนำความมั่นใจ ≥ ${s.suggested_min_conf.min_conf}</b> (${s.suggested_min_conf.n} แผน, เฉลี่ย ${signed(s.suggested_min_conf.avg_r, 2)}R)` : " · ยังไม่มีข้อมูลพอแนะนำเกณฑ์ (ต้อง ≥ 20 แผนที่ปิดผล)") +
+    `<br>${esc(s.note)}`;
+  const grp = (label, o) => ({ g: label, ...o });
+  const rows = [...s.by_confidence.map((b) => grp("ความมั่นใจ " + b.range, b)),
+    ...Object.entries(s.by_liquidity).map(([k, v]) => grp("Liquidity: " + ({ with: "ตาม sweep", against: "สวน sweep", mixed: "ปนกัน", none: "ไม่มี sweep" }[k] || k), v)),
+    grp("ส่งออเดอร์จริง", s.executed), grp("ถูกระบบปฏิเสธ", s.rejected)].filter((r) => r.n);
+  $("#aiJrConf").innerHTML = table([{ h: "กลุ่ม", f: (r) => esc(r.g) }, { h: "ปิดผล", n: 1, f: (r) => r.n }, { h: "ชนะ %", n: 1, f: (r) => r.win_rate ?? "—" },
+    { h: "เฉลี่ย", n: 1, f: (r) => fmtR(r.avg_r) }, { h: "รวม", n: 1, f: (r) => fmtR(r.total_r) }], rows, "ยังไม่มีแผนที่ปิดผล – ระบบเริ่มเก็บแล้ว");
+  const st = { open: "รอผล", pending: "รอเข้า", done: "ปิดผล", expired: "ไม่ถึงราคา", wait: "WAIT", unscorable: "ใช้ไม่ได้" };
+  $("#aiJrRecent").innerHTML = table([{ h: "เวลา", f: (p) => ftime(p.time) }, { h: "แผน", f: (p) => p.action === "WAIT" ? "WAIT" : sideTag(p.action) + " " + esc(p.order_type) },
+    { h: "มั่นใจ", n: 1, f: (p) => numTxt(p.confidence) }, { h: "Liquidity", f: (p) => esc(p.liq_alignment || "—") },
+    { h: "ส่งจริง", f: (p) => (p.executed ? "✓" : p.valid || p.action === "WAIT" ? "" : `<span class="muted" title="${esc(p.problem)}">ปฏิเสธ</span>`) },
+    { h: "สถานะ", f: (p) => esc(st[p.status] || p.status) + (p.exit ? " · " + esc(p.exit) : "") }, { h: "ผล", n: 1, f: (p) => fmtR(p.result_r) }],
+    d.recent, "ยังไม่มีแผน");
+}
+$("#aiJrRefresh").addEventListener("click", () => loadAIJournal().catch((e) => toast(e.message)));
+async function loadLanes() {
+  const d = await api("lanes?days=30");
+  const L = d.limits;
+  $("#lnInfo").innerHTML = `โควตาต่อเลน: ${L.lane_max_positions} ไม้พร้อมกัน · เว้น ${L.lane_cooldown_min} นาที · ${L.lane_max_orders_day} ไม้/วัน · ขาดทุนไม่เกิน ${L.lane_max_daily_loss_pct}%/วัน` +
+    ` · ความเสี่ยงรวมที่เปิดอยู่ตอนนี้ ${d.open_risk_pct ?? "—"}% (เพดาน ${L.max_total_open_risk_pct}%) · Position รวมสูงสุด ${L.max_open_positions}`;
+  const fmtR = (v) => (v === null || v === undefined ? "—" : `<span class="${cls(v)}">${signed(v, 2)}R</span>`);
+  const res = (o) => (o && o.n ? `${o.n} · ${o.win_rate}% · ${fmtR(o.avg_r)}` : "—");
+  const badge = (m) => `<span class="tag ${m === "live" ? "buy" : m === "shadow" ? "" : "sell"}">${{ live: "LIVE", shadow: "SHADOW", off: "ปิด" }[m] || esc(m)}</span>`;
+  $("#lnTable").innerHTML = table([
+    { h: "เลน", f: (x) => `<b>${esc(x.lane)}</b> <span class="muted">${esc(x.name)}</span>` }, { h: "Symbol", f: (x) => esc(x.symbol || "") }, { h: "โหมด", f: (x) => badge(x.mode) },
+    { h: "วันนี้ (เปิด/ไม้/P&L)", f: (x) => `${x.status.open + x.status.pending} / ${x.status.orders_today} / <span class="${cls(x.status.day_pl)}">${signed(x.status.day_pl)}</span>` },
+    { h: "Shadow (แผน·ชนะ·เฉลี่ย)", f: (x) => res(x.results && x.results.shadow) },
+    { h: "Live (ไม้·ชนะ·เฉลี่ย)", f: (x) => res(x.results && x.results.live) },
+    { h: "ถูกบล็อก (ถ้าเข้าจะได้)", f: (x) => res(x.results && x.results.blocked) },
+  ], d.lanes);
+}
+$("#lnRefresh").addEventListener("click", () => loadLanes().catch((e) => toast(e.message)));
+async function loadAI() { await Promise.all([loadLanes().catch(() => {}), loadSignals(), loadAIState(), loadNews(), loadPerf(), runBacktest(), loadOptimizer(), runGiveBack()]); }
 
 
 /* ---------------- ADAPTIVE OPTIMIZER ---------------- */
@@ -625,8 +672,8 @@ async function loadDiag() {
     <div><b>${esc(c.name)}</b> <span class="muted">${esc(c.detail)}</span>${c.ok ? "" : `<div class="fix">→ ${esc(c.fix)}</div>`}</div></div>`).join("");
   const R = { sent: '<span class="pos">ส่งแล้ว</span>', blocked: '<span class="neg">ถูกบล็อก</span>', rejected: '<span class="neg">MT5 ปฏิเสธ</span>', skip: '<span class="muted">ข้าม</span>' };
   $("#diagLog").innerHTML = table([
-    { h: "เวลา", f: (x) => new Date(x.time * 1000).toLocaleTimeString() }, { h: "สัญญาณ", f: (x) => `${x.strategy} ${sideTag(x.side)}` },
-    { h: "ผล", f: (x) => R[x.result] || x.result }, { h: "รายละเอียด", f: (x) => `<span style="white-space:normal">${esc(x.detail)}</span>` },
+    { h: "เวลา", f: (x) => new Date(x.time * 1000).toLocaleTimeString() }, { h: "สัญญาณ", f: (x) => `${esc(x.strategy)} ${sideTag(x.side)}` },
+    { h: "ผล", f: (x) => R[x.result] || esc(x.result) }, { h: "รายละเอียด", f: (x) => `<span style="white-space:normal">${esc(x.detail)}</span>` },
   ], d.auto_log, "ยังไม่มีสัญญาณใหม่ตั้งแต่เปิดโปรแกรม (Scanner ดูเฉพาะ 2 แท่งล่าสุดที่ปิดแล้ว)");
 }
 async function refreshAutoBadge() {
@@ -643,8 +690,20 @@ async function refreshAutoBadge() {
 }
 $("#autoBadge").addEventListener("click", () => go("risk"));
 $("#diagRefresh").addEventListener("click", () => loadDiag());
-$("#diagEnable").addEventListener("click", async () => {
-  await api("autotrade/enable_all", { method: "POST" }); toast("เปิด Auto-Trade ทุกกลยุทธ์แล้ว"); loadDiag(); loadRisk(); refreshAutoBadge();
+$("#diagEnable").addEventListener("click", async (e) => {
+  // on a REAL account the server asks for a second click to confirm
+  const btn = e.currentTarget, live = btn.dataset.live === "1";
+  if (!btn.dataset.orig) btn.dataset.orig = btn.textContent;
+  try {
+    await api("autotrade/enable_all", { method: "POST", body: live ? { confirm_live: true } : {} });
+    delete btn.dataset.live; btn.textContent = btn.dataset.orig;
+    toast("เปิด Auto-Trade ทุกกลยุทธ์แล้ว"); loadDiag(); loadRisk(); refreshAutoBadge();
+  } catch (err) {
+    if (!live && /บัญชีจริง/.test(err.message)) {
+      btn.dataset.live = "1"; btn.textContent = "⚠ ยืนยัน: เปิด Auto-Trade ด้วยเงินจริง"; toast(err.message, 5000);
+      setTimeout(() => { delete btn.dataset.live; btn.textContent = btn.dataset.orig; }, 8000);
+    } else toast("ผิดพลาด: " + err.message, 5000);
+  }
 });
 $("#diagTest").addEventListener("click", (e) => confirmClick(e.currentTarget, "ยืนยันส่ง BUY 0.01?", async () => {
   try {
@@ -669,7 +728,7 @@ async function loadNews(refresh = false) {
   $("#newsTable").innerHTML = rows.length ? `<table><thead><tr><th>เวลา (ไทย)</th><th>Server</th><th>สกุล</th><th>ระดับ</th><th>ข่าว</th><th class="n">คาด</th><th class="n">ก่อน</th><th class="n">จริง</th><th>อ่านผล → ทอง</th></tr></thead><tbody>${rows.map((e) =>
     `<tr class="${e.time_utc < now ? "past" : e.minutes_until <= 60 ? "soon" : ""}"><td>${lt(e.time_utc)}</td><td class="mono">${ftime(e.time_server, false)}</td><td>${esc(e.currency)}</td><td><span class="imp ${esc(e.impact)}">${esc(e.impact)}</span></td><td style="white-space:normal">${esc(e.title)}</td><td class="n">${esc(e.forecast)}</td><td class="n">${esc(e.previous)}</td><td class="n">${esc(e.actual || "")}</td><td>${e.reading ? `<span class="${e.reading.gold_bias === "BUY" ? "pos" : e.reading.gold_bias === "SELL" ? "neg" : "muted"}">${esc(e.reading.usd)} · ${esc(e.reading.gold)}</span>` : ""}</td></tr>`).join("")}</tbody></table>`
     : `<div class="empty">${d.error ? "ดึงปฏิทินไม่สำเร็จ" : "ไม่มีข่าวในสัปดาห์นี้ตามสกุลที่เลือก"}</div>`;
-  $("#newsHead").innerHTML = d.headlines.length ? d.headlines.map((x) => `<div><span class="muted mono">${x.time_utc ? new Date(x.time_utc * 1000).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}</span> ${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener" style="color:var(--text)">${esc(x.title)}</a>` : esc(x.title)}</div>`).join("")
+  $("#newsHead").innerHTML = d.headlines.length ? d.headlines.map((x) => `<div><span class="muted mono">${x.time_utc ? new Date(x.time_utc * 1000).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}</span> ${x.link ? `<a href="${safeUrl(x.link)}" target="_blank" rel="noopener noreferrer" style="color:var(--text)">${esc(x.title)}</a>` : esc(x.title)}</div>`).join("")
     : `<div class="empty">${esc(d.headline_error || "ยังไม่มีพาดหัว")}</div>`;
   $("#nwCur").value = c.currencies.join(","); $("#nwBefore").value = c.block_before_min; $("#nwAfter").value = c.block_after_min;
   $("#nwHigh").checked = c.block_impacts.includes("High"); $("#nwMed").checked = c.block_impacts.includes("Medium");
@@ -686,8 +745,43 @@ $("#nwSave").addEventListener("click", async () => {
 });
 
 /* ---------------- RISK & SETTINGS ---------------- */
-const RF = { rDefLot: "default_lot", rMaxLot: "max_lot", rRisk: "risk_per_trade_pct", rDayPct: "max_daily_loss_pct", rDayMoney: "max_daily_loss_money", rMaxOrders: "max_orders_per_day", rMaxPos: "max_open_positions", rSpread: "max_spread" };
+const RF = { rDefLot: "default_lot", rMaxLot: "max_lot", rRisk: "risk_per_trade_pct", rDayPct: "max_daily_loss_pct", rDayMoney: "max_daily_loss_money", rMaxOrders: "max_orders_per_day", rMaxPos: "max_open_positions", rSameSide: "max_same_side", rSameCool: "same_side_cooldown_min", rLaneMax: "lane_max_positions", rLaneCool: "lane_cooldown_min", rLaneOrders: "lane_max_orders_day", rLaneLoss: "lane_max_daily_loss_pct", rTotRisk: "max_total_open_risk_pct", rSpread: "max_spread" };
+async function loadSymbols() {
+  const d = await api("symbols");
+  const names = Object.keys(d.symbols);
+  if (!names.length) { $("#symBox").innerHTML = `<div class="muted">ยังไม่มี – พิมพ์ชื่อแล้วกด "เพิ่ม"</div>`; return; }
+  const sel = (n, k, m) => `<select data-sym="${esc(n)}" data-code="${esc(k)}">${["off", "shadow", "live"].map((x) => `<option value="${x}" ${x === m ? "selected" : ""}>${{ off: "ปิด", shadow: "Shadow", live: "Live" }[x]}</option>`).join("")}</select>`;
+  $("#symBox").innerHTML = names.map((n) => {
+    const c = d.symbols[n], t = c.tick;
+    return `<div class="calc" style="margin-bottom:8px"><div><label class="switch" style="margin:0"><input type="checkbox" data-sym-en="${esc(n)}" ${c.enabled ? "checked" : ""}><b>${esc(n)}</b></label>
+      <span class="muted" style="font-size:12px">${c.broker_symbol ? "โบรก: " + esc(c.broker_symbol) : "<span class='neg'>โบรกไม่มี Symbol นี้</span>"}${t ? ` · ราคา ${money(t.bid)} · spread ${money(t.spread)}` : ""}${c.contract_size ? ` · 1 lot = ${esc(c.contract_size)}` : ""}${c.scan && c.scan.error ? ` · <span class="neg">${esc(c.scan.error)}</span>` : c.scan && c.scan.last_scan ? ` · สแกนล่าสุด ${new Date(c.scan.last_scan * 1000).toLocaleTimeString()}` : ""}</span></div>
+      <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:6px">${Object.entries(c.modes).map(([k, m]) => `<div style="min-width:120px"><label>${esc(k)}</label>${sel(n, k, m)}</div>`).join("")}
+        <div style="max-width:120px"><label>Spread สูงสุด</label><input type="number" step="0.5" data-sym-spr="${esc(n)}" value="${esc(c.max_spread)}"></div>
+        <div style="max-width:140px"><label>ความเสี่ยงเปิดอยู่สูงสุด %</label><input type="number" step="0.5" data-sym-risk="${esc(n)}" value="${esc(c.max_risk_pct)}"></div>
+        <div class="actions"><button class="btn sm primary" data-sym-save="${esc(n)}">บันทึก ${esc(n)}</button></div></div></div>`;
+  }).join("");
+}
+async function saveSymbol(n, extra = {}) {
+  const modes = {}; $$(`[data-sym="${n}"]`).forEach((s) => (modes[s.dataset.code] = s.value));
+  const body = { enabled: $(`[data-sym-en="${n}"]`) ? $(`[data-sym-en="${n}"]`).checked : true, modes,
+    max_spread: +($(`[data-sym-spr="${n}"]`) || {}).value || 30, max_risk_pct: +($(`[data-sym-risk="${n}"]`) || {}).value || 6, ...extra };
+  try { await api("symbols/" + encodeURIComponent(n), { method: "POST", body }); toast(`บันทึก ${n} แล้ว`); loadSymbols(); }
+  catch (err) {
+    if (/ยืนยัน/.test(err.message) && !extra.confirm_live) { toast(err.message + " – กดบันทึกอีกครั้งภายใน 8 วินาที", 6000); S.symConfirm = n; setTimeout(() => (S.symConfirm = null), 8000); }
+    else toast("ผิดพลาด: " + err.message, 5000);
+  }
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-sym-save]"); if (!b) return;
+  const n = b.dataset.symSave; saveSymbol(n, S.symConfirm === n ? { confirm_live: true } : {});
+});
+$("#symAdd").addEventListener("click", async () => {
+  const n = $("#symNew").value.trim().toUpperCase(); if (!n) return;
+  try { await api("symbols/" + encodeURIComponent(n), { method: "POST", body: { enabled: true } }); $("#symNew").value = ""; toast(`เพิ่ม ${n} (ทุกเลนเป็น Shadow)`); loadSymbols(); }
+  catch (err) { toast("ผิดพลาด: " + err.message, 5000); }
+});
 async function loadRisk(full = true) {
+  loadSymbols().catch(() => {});
   const [r, st] = await Promise.all([api("risk"), api("settings")]);
   if (full) loadTM().catch(() => {});
   loadDiag().catch(() => {});
@@ -715,10 +809,24 @@ async function loadRisk(full = true) {
   const s = st.settings;
   $("#stSym").value = s.symbol; $("#stTf").value = s.timeframe; $("#stGd").value = s.goals.daily; $("#stGw").value = s.goals.weekly; $("#stGm").value = s.goals.monthly;
   $("#stMagic").value = s.dashboard_magic; $("#stAs").value = s.asian_session.start_hour; $("#stAe").value = s.asian_session.end_hour;
-  $("#stProv").value = s.ai.provider || "anthropic"; $("#stOKey").value = s.ai.openai_api_key || ""; $("#stOModel").value = s.ai.openai_model || "gpt-6.1-sol";
-  $("#stKey").value = s.ai.anthropic_api_key; $("#stModel").value = s.ai.model; $("#stWs").value = s.ai.anthropic_workspace_id || ""; $("#stNews").value = s.ai.news_note || "";
+  $("#stProv").value = s.ai.provider || "anthropic"; showKey("#stOKey", s.ai.openai_api_key, "sk-..."); $("#stOModel").value = s.ai.openai_model || "gpt-6.1-sol";
+  showKey("#stKey", s.ai.anthropic_api_key, "sk-ant-..."); $("#stModel").value = s.ai.model; $("#stWs").value = s.ai.anthropic_workspace_id || ""; $("#stNews").value = s.ai.news_note || "";
   $("#oStrat").innerHTML = `<option value="MANUAL">Manual</option>` + Object.entries(st.strategies).map(([k, n]) => `<option value="${k}">${n}</option>`).join("");
 }
+// a saved key is never shown or re-sent: the field stays empty (empty = keep the saved key)
+function showKey(sel, masked, ph) {
+  const el = $(sel); el.value = "";
+  el.placeholder = masked ? "✓ บันทึกไว้แล้ว – เว้นว่างไว้ = ใช้ Key เดิม" : ph;
+  const btn = document.querySelector(`[data-clear-key="${sel === "#stKey" ? "anthropic_api_key" : "openai_api_key"}"]`);
+  if (btn) btn.style.display = masked ? "" : "none";
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-clear-key]"); if (!b) return;
+  confirmClick(b, "ยืนยันลบ?", async () => {
+    try { await api("settings", { method: "POST", body: { clear_keys: [b.dataset.clearKey] } }); toast("ลบ Key แล้ว"); loadRisk(); }
+    catch (err) { toast("ผิดพลาด: " + err.message, 5000); }
+  });
+});
 const eaRow = (m = "", n = "") => `<tr><td><input class="ea-m" value="${esc(m)}" style="width:110px"></td><td><input class="ea-n" value="${esc(n)}"></td><td><button class="btn sm" onclick="this.closest('tr').remove()">ลบ</button></td></tr>`;
 $("#eaAdd").addEventListener("click", () => $("#eaTable").insertAdjacentHTML("beforeend", eaRow()));
 $("#eaSave").addEventListener("click", async () => {

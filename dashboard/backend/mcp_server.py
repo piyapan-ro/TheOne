@@ -11,17 +11,28 @@ import requests
 from mcp.server.fastmcp import FastMCP
 
 BASE = os.environ.get("AITRADER_URL", "http://127.0.0.1:8000").rstrip("/") + "/api/"
+TOKEN_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "api_token.txt")
 mcp = FastMCP("ai-trader")
 
 
+def _headers():
+    """The dashboard writes its API token to data/api_token.txt when it starts."""
+    try:
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            return {"X-AIT-Token": f.read().strip()}
+    except OSError:
+        return {}
+
+
 def _get(path, **params):
-    r = requests.get(BASE + path, params={k: v for k, v in params.items() if v is not None}, timeout=30)
+    r = requests.get(BASE + path, params={k: v for k, v in params.items() if v is not None}, timeout=30,
+                     headers=_headers())
     r.raise_for_status()
     return r.json()
 
 
 def _post(path, body=None):
-    r = requests.post(BASE + path, json=body or {}, timeout=30)
+    r = requests.post(BASE + path, json=body or {}, timeout=30, headers=_headers())
     try:
         data = r.json()
     except Exception:
@@ -45,9 +56,10 @@ def get_market_context(timeframe: str = "M5") -> dict:
 
 
 @mcp.tool()
-def get_candles(timeframe: str = "M5", count: int = 120) -> list:
-    """Recent OHLC candles with EMA/Bollinger values (time = broker server time, unix seconds)."""
-    d = _get("rates", tf=timeframe, count=max(count, 250), signals="false")
+def get_candles(timeframe: str = "M5", count: int = 120, symbol: str = None) -> list:
+    """Recent OHLC candles with EMA/Bollinger values (time = broker server time, unix seconds).
+    symbol: empty = the main gold symbol, or an extra symbol such as "BTCUSD"."""
+    d = _get("rates", tf=timeframe, count=max(count, 250), signals="false", symbol=symbol)
     return d["candles"][-count:]
 
 
@@ -60,9 +72,12 @@ def get_signals() -> dict:
 
 
 @mcp.tool()
-def backtest_strategies(timeframe: str = "M5", bars: int = 6000) -> dict:
-    """Quick backtest of all 6 strategies on recent history. Returns win rate, PF, total R, max DD per strategy."""
-    d = _get("backtest", tf=timeframe, count=bars)
+def backtest_strategies(timeframe: str = "M5", bars: int = 6000, symbol: str = None) -> dict:
+    """Backtest every strategy lane on recent history (spread on entry, gaps, one position per lane,
+    Breakeven/Trailing simulated when the Trade Manager manages Dashboard orders - gold only).
+    symbol: empty = gold, or e.g. "BTCUSD". Max 20000 bars.
+    Returns win rate, PF, expectancy, t-stat, total R and max DD per strategy."""
+    d = _get("backtest", tf=timeframe, count=bars, symbol=symbol)
     for v in d["results"].values():
         v.pop("trades", None)
     return d
@@ -117,6 +132,23 @@ def place_order(side: str, volume: float, stop_loss: float, take_profit: float =
 
 
 @mcp.tool()
+def get_lanes(days: int = 30) -> dict:
+    """Trading lanes (each strategy + the AI) with their own quota: mode off/shadow/live, today's use,
+    and results on real prices for live trades and shadow (paper) signals. A lane goes Live when its
+    shadow results are positive over enough plans (>= 30)."""
+    return _get("lanes", days=days)
+
+
+@mcp.tool()
+def get_ai_track_record(days: int = 30) -> dict:
+    """How accurate the AI's trade plans really were: every plan (also ones not traded) is scored
+    against real M1 prices (TP or SL first). Win rate / avg R by confidence level, liquidity-sweep
+    alignment, session and source, plus a suggested minimum confidence once there is enough data."""
+    d = _get("ai/journal", days=days, limit=15)
+    return d
+
+
+@mcp.tool()
 def run_optimizer(timeframe: str = "M5", bars: int = 12000, combos_per_strategy: int = 40) -> dict:
     """Start the walk-forward parameter optimizer for all 6 strategies (runs in the background,
     ~10-60 s). Poll get_optimizer_results until running is false."""
@@ -144,7 +176,8 @@ def close_position(ticket: int) -> dict:
 
 @mcp.tool()
 def modify_position(ticket: int, stop_loss: float = None, take_profit: float = None) -> dict:
-    """Change SL/TP of an open position."""
+    """Change SL/TP of an open position. A value you leave out keeps its current level.
+    The stop cannot be removed or widened beyond the per-trade risk limit."""
     return _post(f"position/{ticket}/modify", {"sl": stop_loss, "tp": take_profit})
 
 

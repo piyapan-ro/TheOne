@@ -10,6 +10,7 @@ Rich market context for the AI: what a discretionary gold trader looks at before
 """
 import numpy as np
 
+import liquidity
 import strategies as st
 
 DAY = 86400
@@ -36,7 +37,8 @@ def structure(df, k=3, n=4):
 def tf_summary(df):
     df = st.add_indicators(df)
     r = df.iloc[-2]  # last closed bar
-    atr_hist = df["atr"].tail(200)
+    closed = df.iloc[:-1]  # every field uses closed bars only (the forming bar still changes)
+    atr_hist = closed["atr"].tail(200)
     stack = ("UP_STRONG" if r.ema20 > r.ema50 > r.ema200 else "DOWN_STRONG" if r.ema20 < r.ema50 < r.ema200 else
              "UP" if r.ema50 > r.ema200 else "DOWN")
     slope = (df["ema50"].iat[-2] - df["ema50"].iat[-12]) / max(r.atr, 1e-9)
@@ -46,19 +48,21 @@ def tf_summary(df):
         "trend": "UP" if r.ema50 > r.ema200 else "DOWN", "ema_stack": stack, "ema50_slope_atr": _r(slope),
         "dist_ema50_atr": _r((r.close - r.ema50) / max(r.atr, 1e-9)),
         "bb_position": _r((r.close - r.bb_lo) / max(r.bb_up - r.bb_lo, 1e-9)),
-        "high_50": _r(df.high.tail(50).max()), "low_50": _r(df.low.tail(50).min()),
+        "high_50": _r(closed.high.tail(50).max()), "low_50": _r(closed.low.tail(50).min()),
         "structure": structure(df.iloc[:-1]),
     }, df
 
 
-def sr_clusters(df, atr, price, k=3, tol=0.35):
-    """Group H1 swing highs/lows into support/resistance zones; more touches = stronger."""
+def sr_clusters(df, atr, price, k=3, tol=0.35, max_width=0.6, bars=200):
+    """Group H1 swing highs/lows into support/resistance zones; more touches = stronger.
+    A zone is at most max_width*ATR wide (it used to grow without limit: one zone of $85 / 51 touches)."""
+    df = df.tail(bars)
     sh, sl = st.swings(df, k)
     pts = list(df["high"].values[sh]) + list(df["low"].values[sl])
     pts.sort()
     zones = []
     for p in pts:
-        if zones and p - zones[-1]["hi"] <= tol * atr:
+        if zones and p - zones[-1]["hi"] <= tol * atr and p - zones[-1]["lo"] <= max_width * atr:
             z = zones[-1]
             z["hi"], z["n"] = p, z["n"] + 1
         else:
@@ -88,7 +92,7 @@ def build(broker, symbol, tf, server_now, utc_offset, asian, extras=None):
     tick = broker.tick(symbol)
     out = {"symbol": symbol, "timeframe": tf, "tick": tick, "server_time": server_now}
     frames = {}
-    for t in ("D1", "H4", "H1", "M15", tf):
+    for t in ("D1", "H4", "H1", "M15", "M5", tf):  # M5 is always needed for the liquidity sweep check
         if t in frames:
             continue
         df = broker.rates(symbol, t, 400)
@@ -146,6 +150,12 @@ def build(broker, symbol, tf, server_now, utc_offset, asian, extras=None):
     trends = {t: out[t]["trend"] for t in ("D1", "H4", "H1", "M15", tf) if t in out}
     ups = sum(1 for v in trends.values() if v == "UP")
     out["mtf_alignment"] = {"trends": trends, "up_count": ups, "down_count": len(trends) - ups}
+
+    # --- liquidity pools & sweeps (stop hunts)
+    try:
+        out["liquidity"] = liquidity.analyze(frames, lv, price, {t: out[t]["atr"] for t in ("M5", "M15", "H1") if t in out})
+    except Exception as e:  # never break the whole context
+        out["liquidity"] = {"error": repr(e)}
     out["not_available"] = ["Order flow / volume จริง (มีแค่ tick volume)"]
     if extras:
         out.update(extras)

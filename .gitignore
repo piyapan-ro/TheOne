@@ -1,0 +1,11 @@
+# secrets & local state - NEVER commit (API keys, MT5 password live in data/settings.json)
+dashboard/data/*
+!dashboard/data/.gitkeep
+.venv/
+dashboard/.venv/
+__pycache__/
+*.pyc
+*.onnx
+parity_check.csv
+AIScalper_settings.json
+*.log

@@ -1,0 +1,149 @@
+# AI Trader Dashboard (XAUUSD × MT5 × Claude)
+
+ระบบ Dashboard สำหรับเทรดทองคำที่ต่อกับ MetaTrader 5 โดยตรง และให้ Claude เข้ามาทำงานร่วมผ่าน MCP
+
+```
+ข้อมูลตลาด (MT5) → สแกนสัญญาณ 6 กลยุทธ์ → ส่งคำสั่ง (ผ่าน Risk Manager) → Journal อัตโนมัติ → วิเคราะห์ประสิทธิภาพ
+```
+
+## โมดูล
+
+| หน้า | สิ่งที่ทำ |
+|---|---|
+| **Dashboard** | Balance / Equity / Credit / Floating P/L แบบ Real-time, Win Rate, Profit Factor, Max Drawdown, กราฟพอร์ต, P/L รายวัน, เป้าหมายรายวัน/สัปดาห์/เดือน |
+| **Terminal** | กราฟ XAUUSD จาก MT5 (M1–H4) + EMA/Bollinger, Market / Limit / Stop order, คำนวณ Lot จาก Risk %, SL/TP และ R:R, แสดงสัญญาณกลยุทธ์ + จุดเข้า/ออกจริงบนกราฟ, คลิกบนกราฟเพื่อตั้งราคา Pending |
+| **Journal** | ดึงประวัติจาก MT5 อัตโนมัติ แยกตาม EA (Magic Number) หรือเทรดมือ, กรองตามวัน/ชั่วโมง/ที่มา/กลยุทธ์/ฝั่ง/ผล, ใส่โน้ตรายไม้, Export CSV (เปิดใน Excel ภาษาไทยได้) |
+| **AI & Analytics** | Signal Scanner 6 กลยุทธ์, Backtest ทุกกลยุทธ์บนข้อมูลย้อนหลัง, ผลจริงแยกกลยุทธ์/EA, ความสม่ำเสมอ (วันกำไร %, SD, Sharpe, สัดส่วนวันที่ดีที่สุด), P/L ตามชั่วโมง/วัน, AI Market Analysis |
+| **Risk & Settings** | Lot สูงสุด, Risk ต่อไม้, ขาดทุนสูงสุดต่อวัน (% หรือ $), ออเดอร์/วัน, Position พร้อมกัน, Spread สูงสุด, บังคับ SL, **Kill Switch**, ตั้งชื่อ EA ตาม Magic, ตั้งค่า Scanner/Auto-Trade |
+
+### กลยุทธ์ 6 แบบ (`backend/strategies.py`)
+1. **SMC** – Liquidity Sweep (กวาด swing high/low แล้วปิดกลับ) + Break of Structure
+2. **SND** – Supply / Demand Retest (ฐานก่อนแท่ง Impulse > 1.6 ATR, เข้าเมื่อ retest ครั้งแรก)
+3. **EMA** – Trend Pullback (EMA20>50>200 ย่อแตะ EMA20 แล้วเด้ง)
+4. **BB** – Bollinger Bands Pullback (เทรนด์ตาม EMA200 ย่อแตะเส้นกลาง)
+5. **ASIA** – Asian Range Breakout (กรอบช่วงเอเชียตามเวลา Server ตั้งได้ในหน้า Settings)
+6. **AIPB** – AI Playbook: ให้คะแนน Confluence -100..+100 จากเทรนด์, RSI, โมเมนตัม และสัญญาณของกลยุทธ์อื่น
+
+ทุกกลยุทธ์ใช้เฉพาะแท่งที่ปิดแล้ว และส่ง Entry / SL / TP (ตาม R:R ที่ตั้งไว้)
+
+### Lot เริ่มต้น
+ค่าเริ่มต้นเป็น **Lot คงที่ 0.01** ทุกออเดอร์ (ทั้งหน้า Terminal และ Auto-Trade) เปลี่ยนเป็น "คำนวณจาก Risk %" ได้ที่ Risk & Settings → กฎความเสี่ยง → วิธีกำหนด Lot
+Risk Manager ยังตรวจความเสี่ยงต่อไม้เสมอ: ถ้า SL กว้างจนแม้ 0.01 lot ก็เสี่ยงเกิน Risk ต่อไม้ ออเดอร์จะถูกปฏิเสธ
+
+### Trade Manager: Breakeven / Trailing Stop / Partial TP (หน้า Risk & Settings)
+- **Breakeven**: กำไรถึง X×ATR → เลื่อน SL มาที่ทุน + ล็อกกำไรเล็กน้อย
+- **Trailing Stop**: กำไรถึง Y×ATR → SL วิ่งตามราคาห่าง Z×ATR (เลื่อนไปทางกำไรเท่านั้น)
+- **Partial TP**: ปิดบางส่วน (เช่น 50%) เมื่อกำไรถึงระยะที่กำหนด (ต้องมี lot พอแบ่ง เช่น 0.02 ขึ้นไป)
+- เลือกได้ว่าจะจัดการออเดอร์จากที่ไหน (Dashboard / Manual / EA แต่ละตัว) – ค่าเริ่มต้น: Dashboard + Manual
+- ทำงานเฉพาะตอนที่ Dashboard (start.bat) เปิดอยู่
+
+### Profit Give-back & จำลอง Trailing (หน้า AI & Analytics)
+ไล่ราคา M1 ระหว่างที่แต่ละออเดอร์เปิดอยู่ เพื่อหา MFE (กำไรสูงสุดที่เคยมี), MAE, % กำไรที่เก็บได้จริง, ออเดอร์ที่เคยกำไร ≥ 1 ATR แต่จบขาดทุน
+แล้วจำลองย้อนหลังว่าถ้าใช้ BE/Trailing ชุดต่าง ๆ ผลรวมจะเป็นเท่าไร → กด "ใช้ชุดนี้" เพื่อตั้งค่า Trade Manager ได้ทันที
+
+### AI วิเคราะห์ + ส่งออเดอร์ได้
+- ปุ่ม "วิเคราะห์ตอนนี้" ได้ทั้งบทวิเคราะห์และ **แผนเทรด (BUY/SELL/WAIT, SL, TP, ความมั่นใจ)** → กด "ส่งออเดอร์ตามแผน AI" (ผ่าน Risk Manager)
+- **AI Auto-Trade**: ให้ AI วิเคราะห์ทุก N นาทีและส่งออเดอร์เองเมื่อความมั่นใจ ≥ ที่ตั้ง (ไม่มี API Key จะใช้แผนจากกฎ)
+- ข้อมูลที่ AI ได้รับ: เทรนด์และโครงสร้าง D1/H4/H1/M15/M5, PDH/PDL, Week H/L, Asian range, โซน S/R H1, เลขกลม, Session, ATR percentile, Range วันนี้เทียบ ADR, แท่งเทียนล่าสุด, Position ที่เปิด, ผลเทรดล่าสุด, edge ของแต่ละกลยุทธ์จาก Optimizer และ "บันทึกถึง AI" (ใส่ข่าวสำคัญของวันเองในหน้า Settings)
+
+### ข่าว (Forex Factory) & สภาวะตลาด
+- ดึง **ปฏิทินข่าวเศรษฐกิจ** จาก Forex Factory (nfs.faireconomy.media, อัปเดตทุก 60 นาที) + **พาดหัวข่าว** ที่เกี่ยวกับทอง/ดอลลาร์จาก RSS (FXStreet)
+- **อ่านผลข่าวอัตโนมัติ**: เทียบ actual กับ forecast → USD ดี/แย่กว่าคาด → หนุน/กดทอง (กลับด้านให้ข่าวอย่าง Unemployment Rate/Claims)
+- **เทรดช่วงข่าวได้** (ค่าเริ่มต้น): AI/กฎจะเล่นตามผลข่าวเมื่อราคายืนยันทิศ ไม่ไล่แท่งแรก · ถ้าอยากพักช่วงข่าว ติ๊ก "พัก Auto-Trade/AI" ในการ์ดปฏิทินข่าว
+- **สภาวะตลาด (Market Regime)**: เทรนด์ขึ้น/ลง, ย่อตัวในเทรนด์, ไซด์เวย์, ผันผวน/เบรกเอาต์, กระชาก(ข่าว), เงียบ – แสดงที่แถบบน และใช้ **กรองกลยุทธ์** ให้ Auto-Trade ใช้เฉพาะกลยุทธ์ที่เหมาะกับสภาวะตอนนั้น
+- DXY: ถ้าโบรกมี Symbol DXY/USDX ระบบจะส่งเทรนด์ดอลลาร์และค่า correlation กับทองให้ AI ด้วย
+
+### เลือก AI ได้: Claude หรือ ChatGPT
+Risk & Settings → ตั้งค่าทั่วไป → "AI ที่ใช้วิเคราะห์" เลือก Claude (Anthropic API Key) หรือ ChatGPT (OpenAI API Key จาก platform.openai.com, เรียกผ่าน Responses API) ใช้ข้อมูลและกฎความเสี่ยงชุดเดียวกัน
+
+### บัญชี Demo = Auto-Trade เปิดให้อัตโนมัติ
+ถ้าบัญชีใน MT5 เป็น Demo ระบบจะเปิด Auto-Trade ทุกกลยุทธ์ + AI Auto-Trade ให้ตั้งแต่เริ่ม (บัญชีจริงไม่เปิดให้อัตโนมัติ)
+การ์ด "ตรวจสถานะการออกไม้" หน้า Risk & Settings บอกทุกเงื่อนไขที่ทำให้ไม่เข้าออเดอร์ + ปุ่มทดสอบส่งออเดอร์ 0.01
+
+### Adaptive Optimizer (หน้า AI & Analytics)
+จูนพารามิเตอร์ทั้ง 6 กลยุทธ์ด้วย **Walk-forward** แล้วเสนอให้คุณกด Apply เอง (ไม่มีการเปลี่ยนค่าอัตโนมัติ)
+
+1. แบ่งข้อมูลย้อนหลังเป็น 6 ช่วง → เลือกค่าที่ดีที่สุดจาก 2 ช่วง แล้ววัดผลกับช่วงถัดไปที่ไม่เคยเห็น (ทำซ้ำ 4 รอบ)
+2. เทียบกับค่าที่ใช้งานอยู่บนช่วงทดสอบเดียวกัน
+3. ค่าที่เสนอจะถูก fit บนข้อมูลครึ่งหลัง แล้วตรวจกับครึ่งแรกที่ไม่เคยเห็นอีกชั้น
+4. เสนอเปลี่ยนเฉพาะเมื่อ: ผล OOS เป็นบวก, ดีกว่าค่าปัจจุบัน ≥ 0.05R/ไม้, มีไม้พอ (≥ 20) และผ่านการตรวจข้อมูลครึ่งเก่า
+5. ถ้าค่าปัจจุบันขาดทุน และจูนแล้วก็ยังไม่เป็นบวก → เสนอ "พักกลยุทธ์" (ปิดสแกน + Auto-trade)
+6. ถ้าผลเทรดจริงใน Journal แย่กว่า Backtest มาก → แจ้งเตือน (ไม่ปรับอะไร)
+
+ผลทั้งหมดหักต้นทุน spread + slippage แล้ว ทุกการเปลี่ยนแปลงบันทึกในประวัติและ **ย้อนกลับได้** · Claude เรียกดูผลผ่าน MCP ได้ (`run_optimizer`, `get_optimizer_results`) แต่การ Apply ต้องกดในหน้า Dashboard เท่านั้น
+
+> Optimizer ช่วยลดการเลือกค่าที่บังเอิญดีแค่ในอดีต (overfit) แต่ไม่ได้รับประกันผลในอนาคต ควรรันซ้ำทุก 1–2 สัปดาห์ และทดสอบบนบัญชี Demo ก่อนใช้จริง
+
+### Risk Manager & Kill Switch
+- ทุกออเดอร์ (จากหน้าจอ, Auto-Trade หรือจาก Claude ผ่าน MCP) ต้องผ่าน `risk.check()` ก่อนเสมอ
+- **Kill Switch**: ปิดทุก Position + ลบ Pending ทั้งบัญชี และระหว่างที่เปิดอยู่ ถ้ามี EA ตัวไหนเปิดออเดอร์ใหม่ ระบบจะปิดให้ทุก 2 วินาที
+- เปิด Kill Switch อัตโนมัติเมื่อขาดทุนถึงลิมิตรายวันได้ (ค่าเริ่มต้น: เปิด)
+- Kill ที่เกิดจากลิมิตขาดทุนรายวัน จะ**ปลดล็อกอัตโนมัติเมื่อขึ้นวันใหม่ตามเวลา Server** (ปิดได้ใน Settings) ส่วน Kill ที่กดเองต้องกด RESUME เอง
+- Claude สั่งเปิด Kill Switch ได้ แต่ **ปลดล็อกได้เฉพาะคนในหน้า Dashboard**
+
+---
+
+## ติดตั้ง (Windows)
+
+ต้องมี: Windows + MetaTrader 5 (ล็อกอินบัญชีไว้แล้ว) + Python 3.10–3.12 แนะนำ 3.11 (ติ๊ก "Add to PATH" ตอนติดตั้ง — แพ็กเกจ MetaTrader5 อาจยังไม่รองรับ Python เวอร์ชันใหม่ล่าสุด)
+
+1. ดับเบิลคลิก **`install.bat`** (สร้าง `.venv` และติดตั้งแพ็กเกจ)
+2. เปิด MT5 → Tools → Options → Expert Advisors → ติ๊ก **Allow algorithmic trading**
+3. ดับเบิลคลิก **`start.bat`** → เบราว์เซอร์จะเปิด http://127.0.0.1:8000
+4. ไปที่ **Risk & Settings** → ตั้งชื่อ Symbol ให้ตรงกับโบรก (เช่น `XAUUSD`, `XAUUSDm`, `GOLD`) แล้วกดบันทึก
+
+ถ้ามุมซ้ายบนขึ้น **LIVE** = ต่อ MT5 จริงแล้ว ถ้าขึ้น **DEMO** = หา MT5 ไม่เจอ ระบบจะใช้ข้อมูลจำลองแทน (ใช้ทดสอบหน้าจอ/สอนได้ แต่ไม่ใช่ข้อมูลจริง)
+
+> ถ้ามีหลาย MT5 ในเครื่อง หรืออยากให้ล็อกอินเอง ให้แก้ `data/settings.json` → `"mt5": {"path": "C:\\Program Files\\...\\terminal64.exe", "login": ..., "password": "...", "server": "..."}` แล้วรัน start.bat ใหม่ (ไฟล์นี้จะถูกสร้างหลังกดบันทึกครั้งแรก)
+
+### Magic Number ของ EA ที่มีอยู่
+ตั้งไว้ให้แล้ว: `260109` = GoldScalper M1, `260110` = AIScalper M1, `0` = เทรดมือ, `777000` = ออเดอร์จาก Dashboard (comment `AIT:<กลยุทธ์>`)
+เพิ่ม EA ตัวอื่นได้ที่ Risk & Settings → Magic Number → ชื่อ EA
+
+---
+
+## เชื่อม Claude ผ่าน MCP
+
+1. รัน `start.bat` ให้ Dashboard ทำงานอยู่
+2. เปิด Claude Desktop → Settings → Developer → Edit Config แล้ววางเนื้อหาจาก `claude_desktop_config.example.json` (แก้ path ให้ตรงกับเครื่อง)
+3. ปิด-เปิด Claude Desktop ใหม่ จะเห็นเครื่องมือ `ai-trader`
+
+เครื่องมือที่ Claude ใช้ได้: `get_account`, `get_market_context`, `get_candles`, `get_signals`, `backtest_strategies`, `get_positions`, `get_journal`, `get_performance`, `get_risk_status`, `run_optimizer`, `get_optimizer_results`, `calculate_lot`, `place_order`, `close_position`, `modify_position`, `activate_kill_switch`
+
+ตัวอย่างคำถาม:
+- "สรุปภาพรวมทองตอนนี้ให้หน่อย แล้วบอกว่ามีสัญญาณจากกลยุทธ์ไหนบ้าง"
+- "สัปดาห์นี้ EA ตัวไหนทำผลงานแย่สุด แพ้ช่วงเวลาไหนบ่อย"
+- "คำนวณ Lot ให้ถ้า Buy SL 4140 เสี่ยง 0.5%"
+
+(ปุ่ม "วิเคราะห์ตอนนี้" ในหน้า AI ใช้ Anthropic API Key ได้ถ้าใส่ไว้ ถ้าไม่ใส่จะแสดงผลวิเคราะห์จากกฎแทน)
+
+---
+
+## โครงสร้างไฟล์
+```
+AITrader-Dashboard/
+├─ backend/
+│  ├─ main.py          FastAPI server + background scanner/risk loop
+│  ├─ mt5_client.py    MT5 (MetaTrader5 package) + DEMO simulator
+│  ├─ strategies.py    6 กลยุทธ์ + backtester
+│  ├─ analytics.py     Journal + สถิติ
+│  ├─ risk.py          Risk Manager + Kill Switch
+│  ├─ optimizer.py     Adaptive Optimizer (walk-forward)
+│  ├─ news.py          ปฏิทินข่าว Forex Factory + RSS + อ่านผลข่าว
+│  ├─ regime.py        จำแนกสภาวะตลาด
+│  ├─ market_context.py ข้อมูลตลาดหลาย TF / แนวสำคัญ / session สำหรับ AI
+│  ├─ trade_manager.py Breakeven / Trailing / Partial TP + Give-back analysis
+│  ├─ store.py         ค่าตั้งค่า (data/*.json)
+│  └─ mcp_server.py    MCP server สำหรับ Claude
+├─ frontend/           index.html, app.js, styles.css, vendor/ (ไลบรารีกราฟ, ใช้ออฟไลน์ได้)
+├─ data/               settings.json, risk.json, ea_map.json, scanner.json, notes.json, strategy_params.json, optimizer.json
+├─ install.bat / start.bat
+└─ claude_desktop_config.example.json
+```
+
+## ข้อควรระวัง
+- เวลาที่แสดงทั้งหมดเป็น **เวลา Server ของโบรก** (เหมือนใน MT5)
+- **Auto-Trade ปิดไว้เป็นค่าเริ่มต้น** ให้ทดสอบบนบัญชี Demo ก่อนเสมอ
+- Backtest ในหน้า Analytics เป็นแบบง่าย (หัก spread/slippage แบบคงที่) ใช้ดูภาพรวมเท่านั้น ควรทดสอบจริงใน Strategy Tester ของ MT5
+- Server เปิดที่ `127.0.0.1` เท่านั้น (เข้าจากเครื่องอื่นไม่ได้) – อย่าเปิดออกอินเทอร์เน็ตโดยไม่มีระบบล็อกอิน
+- ระบบนี้เป็นเครื่องมือช่วยจัดการและวิเคราะห์ ไม่ใช่คำแนะนำการลงทุน การเทรดทองคำมีความเสี่ยงสูง

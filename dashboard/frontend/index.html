@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Trader Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/static/vendor/chart.umd.js"></script>
+</head>
+<body>
+<aside>
+  <div class="brand"><div class="logo">Au</div>AI Trader</div>
+  <button class="nav active" data-page="dash"><span class="ico">▦</span>Dashboard</button>
+  <button class="nav" data-page="term"><span class="ico">⌁</span>Terminal</button>
+  <button class="nav" data-page="journal"><span class="ico">☰</span>Journal</button>
+  <button class="nav" data-page="ai"><span class="ico">✦</span>AI & Analytics</button>
+  <button class="nav" data-page="risk"><span class="ico">⛨</span>Risk & Settings</button>
+  <div class="foot">เวลาทั้งหมด = เวลา Server ของโบรกเกอร์<br><span id="srvTime" class="mono"></span></div>
+</aside>
+
+<header>
+  <span id="modeBadge" class="badge demo">DEMO</span>
+  <div class="ticker">
+    <span class="sym" id="sym">XAUUSD</span>
+    <span class="px" id="bid">—</span>
+    <span class="muted extra">Ask <span class="num" id="ask">—</span></span>
+    <span class="muted extra">Spread <span class="num" id="spread">—</span></span>
+  </div>
+  <div class="spacer"></div>
+  <span id="regBadge" class="badge demo" style="cursor:help" title="สภาวะตลาด">ตลาด: —</span>
+  <span id="autoBadge" class="badge off" style="cursor:pointer" title="สถานะ Auto-Trade – คลิกเพื่อตรวจ">AUTO OFF</span>
+  <span class="muted extra">Equity <span class="num" id="hdrEq">—</span></span>
+  <button id="killBtn" class="kill-btn">KILL SWITCH</button>
+</header>
+
+<main>
+  <div id="demoBanner" class="banner">โหมด DEMO: ไม่พบ MT5 บนเครื่องนี้ ข้อมูลทั้งหมดเป็นข้อมูลจำลองสำหรับทดสอบหน้าจอเท่านั้น</div>
+  <div id="killBanner" class="banner red"></div>
+
+  <!-- ===================== DASHBOARD ===================== -->
+  <section class="page active" id="page-dash">
+    <div class="grid g6">
+      <div class="card kpi"><div class="label">Balance</div><div class="value" id="kBal">—</div><div class="sub" id="kCur"></div></div>
+      <div class="card kpi"><div class="label">Equity</div><div class="value" id="kEq">—</div><div class="sub" id="kMl"></div></div>
+      <div class="card kpi"><div class="label">Credit</div><div class="value" id="kCredit">—</div><div class="sub">Free margin <span id="kFree"></span></div></div>
+      <div class="card kpi"><div class="label">Floating P/L</div><div class="value" id="kFloat">—</div><div class="sub" id="kOpen"></div></div>
+      <div class="card kpi"><div class="label">P/L วันนี้</div><div class="value" id="kToday">—</div><div class="sub" id="kOrders"></div></div>
+      <div class="card kpi"><div class="label">ใช้ลิมิตขาดทุนวันนี้</div><div class="value" id="kLossUsed">—</div><div class="prog risk"><i id="kLossBar" style="width:0"></i></div></div>
+    </div>
+    <div class="grid g6 mt">
+      <div class="card kpi"><div class="label">Win Rate</div><div class="value" id="sWr">—</div><div class="sub" id="sWl"></div></div>
+      <div class="card kpi"><div class="label">Profit Factor</div><div class="value" id="sPf">—</div><div class="sub" id="sPay"></div></div>
+      <div class="card kpi"><div class="label">Max Drawdown</div><div class="value" id="sDd">—</div><div class="sub" id="sDdp"></div></div>
+      <div class="card kpi"><div class="label">Net Profit</div><div class="value" id="sNet">—</div><div class="sub" id="sTr"></div></div>
+      <div class="card kpi"><div class="label">Expectancy / ไม้</div><div class="value" id="sExp">—</div><div class="sub" id="sAvg"></div></div>
+      <div class="card kpi"><div class="label">วันที่กำไร</div><div class="value" id="sGreen">—</div><div class="sub" id="sGreenSub"></div></div>
+    </div>
+    <div class="grid g21 mt">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0">กราฟพอร์ต (Balance)</h3>
+          <div class="seg" id="dashRange"><button data-d="7">7D</button><button data-d="30">30D</button><button data-d="90" class="on">90D</button><button data-d="365">1Y</button></div>
+        </div>
+        <div class="chart-box tall"><canvas id="cEquity"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>เป้าหมายการเทรด</h3>
+        <div id="goals"></div>
+        <h3 class="mt">ออเดอร์ที่เปิดอยู่</h3>
+        <div id="dashPositions" class="tbl-wrap" style="max-height:170px"></div>
+      </div>
+    </div>
+    <div class="card mt">
+      <h3>สถิติรายวัน</h3>
+      <div class="chart-box"><canvas id="cDaily"></canvas></div>
+    </div>
+  </section>
+
+  <!-- ===================== TERMINAL ===================== -->
+  <section class="page" id="page-term">
+    <div class="grid g12">
+      <div class="card chart-card">
+        <div class="chart-toolbar">
+          <div class="seg" id="tfSeg"></div>
+          <label class="switch"><input type="checkbox" id="optEma" checked>EMA 20/50/200</label>
+          <label class="switch"><input type="checkbox" id="optBb">Bollinger</label>
+          <label class="switch"><input type="checkbox" id="optSig" checked>สัญญาณ</label>
+          <select id="optSigFilter" style="width:auto;padding:4px 8px"><option value="">ทุกกลยุทธ์</option><option>SMC</option><option>SND</option><option>EMA</option><option>BB</option><option>ASIA</option><option>AIPB</option></select>
+          <label class="switch"><input type="checkbox" id="optTrades" checked>จุดเข้า/ออกจริง</label>
+        </div>
+        <div id="tvchart"></div>
+      </div>
+      <div class="card">
+        <h3>ส่งคำสั่ง</h3>
+        <div class="side-toggle"><button class="b on" data-side="BUY">BUY</button><button class="s" data-side="SELL">SELL</button></div>
+        <div class="row">
+          <div><label>ประเภท</label><select id="oKind"><option value="MARKET">Market</option><option value="LIMIT">Limit</option><option value="STOP">Stop</option></select></div>
+          <div><label>ราคา (Pending)</label><input id="oPrice" type="number" step="0.01" disabled placeholder="market"></div>
+        </div>
+        <div class="row mt">
+          <div><label>Stop Loss</label><input id="oSl" type="number" step="0.01"></div>
+          <div><label>Take Profit</label><input id="oTp" type="number" step="0.01"></div>
+        </div>
+        <div class="row mt">
+          <div><label>Risk %</label><input id="oRisk" type="number" step="0.1" value="1"></div>
+          <div><label>Lot</label><input id="oLot" type="number" step="0.01" value="0.01"></div>
+        </div>
+        <div class="row mt">
+          <div><label>SL ห่าง ($)</label><input id="oSlDist" type="number" step="0.1" placeholder="เช่น 5"></div>
+          <div><label>R : R</label><input id="oRR" type="number" step="0.1" value="2"></div>
+          <div class="actions"><button class="btn" id="oAuto" title="ตั้ง SL/TP จากระยะและ R:R">ตั้ง</button></div>
+        </div>
+        <div class="calc" id="oCalc"><div><span class="muted">กรอก SL แล้วกดคำนวณ Lot</span></div></div>
+        <div class="row">
+          <button class="btn" id="oCalcBtn" style="flex:1">คำนวณ Lot / ความเสี่ยง</button>
+        </div>
+        <div class="row mt">
+          <div><label>กลยุทธ์ (บันทึกใน Journal)</label><select id="oStrat"></select></div>
+        </div>
+        <button class="btn buy mt" id="oSend" style="width:100%;padding:12px">ส่งคำสั่ง BUY</button>
+        <div id="oMsg"></div>
+      </div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><h3>Positions</h3><div id="posTable" class="tbl-wrap"></div>
+        <button class="btn danger sm mt" id="closeAll">ปิดทั้งหมด</button></div>
+      <div class="card"><h3>Pending Orders</h3><div id="ordTable" class="tbl-wrap"></div></div>
+    </div>
+  </section>
+
+  <!-- ===================== JOURNAL ===================== -->
+  <section class="page" id="page-journal">
+    <div class="card">
+      <div class="row">
+        <div><label>ตั้งแต่วันที่</label><input type="date" id="jFrom"></div>
+        <div><label>ถึงวันที่</label><input type="date" id="jTo"></div>
+        <div style="max-width:110px"><label>ชั่วโมงเริ่ม</label><input type="number" id="jH1" min="0" max="23" placeholder="0"></div>
+        <div style="max-width:110px"><label>ชั่วโมงจบ</label><input type="number" id="jH2" min="0" max="23" placeholder="23"></div>
+        <div><label>ที่มา (EA / Manual)</label><select id="jSource"><option value="">ทั้งหมด</option></select></div>
+        <div><label>กลยุทธ์</label><select id="jStrat"><option value="">ทั้งหมด</option></select></div>
+        <div><label>ฝั่ง</label><select id="jSide"><option value="">ทั้งหมด</option><option>BUY</option><option>SELL</option></select></div>
+        <div><label>ผล</label><select id="jRes"><option value="">ทั้งหมด</option><option value="win">กำไร</option><option value="loss">ขาดทุน</option><option value="open">เปิดอยู่</option></select></div>
+        <div class="actions"><button class="btn primary" id="jApply">กรอง</button><button class="btn" id="jReset">ล้าง</button><button class="btn gold" id="jCsv">Export CSV</button></div>
+      </div>
+    </div>
+    <div class="grid g6 mt" id="jSummary"></div>
+    <div class="card mt"><div id="jTable" class="tbl-wrap" style="max-height:620px"></div></div>
+  </section>
+
+  <!-- ===================== AI & ANALYTICS ===================== -->
+  <section class="page" id="page-ai">
+    <div class="grid g2">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+          <h3 style="margin:0">Signal Scanner</h3>
+          <span class="muted" id="scanInfo"></span>
+        </div>
+        <div id="sigLatest"></div>
+        <h3 class="mt">สัญญาณล่าสุด (ประวัติ)</h3>
+        <div id="sigHistory" class="tbl-wrap" style="max-height:260px"></div>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+          <h3 style="margin:0">AI Market Analysis</h3>
+          <button class="btn gold" id="aiBtn">วิเคราะห์ตอนนี้</button>
+        </div>
+        <input id="aiQ" placeholder="ถามเพิ่มได้ เช่น ถ้าราคาลงมาที่แนวรับ ควรรอสัญญาณอะไร?">
+        <div class="ai-out mt" id="aiOut">กด "วิเคราะห์ตอนนี้" เพื่อให้ AI สรุปภาพรวมตลาดจากข้อมูล MT5 + สัญญาณ + สถานะความเสี่ยง</div>
+        <div class="muted mt" id="aiNote" style="font-size:12px"></div>
+        <div class="calc" id="aiPlan" style="display:none"></div>
+        <div class="row" id="aiPlanRow" style="display:none"><button class="btn buy" id="aiExec" style="flex:1">ส่งออเดอร์ตามแผน AI</button></div>
+        <div id="aiExecMsg"></div>
+        <div class="row mt" style="align-items:center;border-top:1px solid var(--line);padding-top:10px">
+          <label class="switch" style="flex:1"><input type="checkbox" id="aiAuto"><b>AI Auto-Trade</b>&nbsp;<span class="muted">ให้ AI วิเคราะห์และส่งออเดอร์เอง</span></label>
+          <div style="max-width:110px"><label>ทุก (นาที)</label><input type="number" id="aiInt" min="1"></div>
+          <div style="max-width:120px"><label>ความมั่นใจ ≥</label><input type="number" id="aiConf" min="0" max="100"></div>
+          <div class="actions"><button class="btn sm" id="aiSave">บันทึก</button></div>
+        </div>
+        <div class="muted" style="font-size:12px" id="aiAutoInfo"></div>
+      </div>
+    </div>
+    <div class="card mt" id="newsCard">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="flex:1;min-width:260px"><h3 style="margin:0">ปฏิทินข่าวเศรษฐกิจ (Forex Factory) & พาดหัวข่าว</h3>
+          <div class="muted" style="font-size:12px;margin-top:4px" id="newsInfo"></div></div>
+        <div class="actions"><button class="btn" id="newsRefresh">ดึงข่าวใหม่</button></div>
+      </div>
+      <div id="newsBlock"></div>
+      <div class="grid g21 mt">
+        <div><div id="newsTable" class="tbl-wrap" style="max-height:340px"></div></div>
+        <div><h3>พาดหัวข่าวที่เกี่ยวกับทอง/ดอลลาร์</h3><div id="newsHead" class="events" style="max-height:340px"></div></div>
+      </div>
+      <div class="row mt" style="border-top:1px solid var(--line);padding-top:10px">
+        <div style="max-width:160px"><label>สกุลเงินที่ติดตาม</label><input id="nwCur" placeholder="USD"></div>
+        <div style="max-width:120px"><label>พักก่อนข่าว (นาที)</label><input type="number" id="nwBefore"></div>
+        <div style="max-width:120px"><label>พักหลังข่าว (นาที)</label><input type="number" id="nwAfter"></div>
+        <div style="display:flex;flex-direction:column;gap:6px;justify-content:flex-end">
+          <label class="switch"><input type="checkbox" id="nwHigh">พักเมื่อข่าว High</label>
+          <label class="switch"><input type="checkbox" id="nwMed">พักเมื่อข่าว Medium ด้วย</label></div>
+        <div style="display:flex;flex-direction:column;gap:6px;justify-content:flex-end">
+          <label class="switch"><input type="checkbox" id="nwAuto">พัก Auto-Trade/AI</label>
+          <label class="switch"><input type="checkbox" id="nwManual">บล็อกการเทรดมือด้วย</label></div>
+        <div class="actions"><button class="btn primary" id="nwSave">บันทึก</button></div>
+      </div>
+    </div>
+    <div class="card mt">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">Backtest กลยุทธ์บนข้อมูลย้อนหลัง</h3>
+        <div class="actions">
+          <select id="btTf" style="width:90px"><option>M5</option><option>M15</option><option>M30</option><option>H1</option></select>
+          <select id="btBars" style="width:120px"><option value="3000">3,000 แท่ง</option><option value="6000" selected>6,000 แท่ง</option><option value="10000">10,000 แท่ง</option></select>
+          <button class="btn primary" id="btRun">รัน</button>
+        </div>
+      </div>
+      <div id="btTable"></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">ผลทดสอบแบบง่าย: แตะ SL หรือ TP ก่อน (ถ้าแท่งเดียวโดนทั้งคู่ นับเป็น SL), หักต้นทุน spread + slippage ตาม spread ปัจจุบันแล้ว ใช้พารามิเตอร์ที่ใช้งานอยู่</div>
+    </div>
+    <div class="card mt" id="optCard">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="flex:1;min-width:260px"><h3 style="margin:0">Adaptive Optimizer · จูนพารามิเตอร์แบบ Walk-forward</h3>
+          <div class="muted" style="font-size:12px;margin-top:4px">เลือกค่าที่ดีที่สุดจากข้อมูลช่วงหนึ่ง แล้ววัดผลกับช่วงถัดไปที่ระบบไม่เคยเห็น · ระบบจะเสนอเฉพาะค่าที่ผ่านเกณฑ์ และไม่เปลี่ยนอะไรจนกว่าคุณกด Apply</div></div>
+        <div class="actions">
+          <select id="opTf" style="width:80px"><option>M5</option><option>M15</option><option>M30</option><option>H1</option></select>
+          <select id="opBars"><option value="6000">6,000 แท่ง</option><option value="12000" selected>12,000 แท่ง</option><option value="20000">20,000 แท่ง</option></select>
+          <select id="opCombos"><option value="20">20 ชุด/กลยุทธ์</option><option value="40" selected>40 ชุด/กลยุทธ์</option><option value="80">80 ชุด/กลยุทธ์</option></select>
+          <input id="opCost" type="number" step="0.01" placeholder="ต้นทุน: auto" style="width:120px" title="Spread + slippage ต่อไม้ (หน่วยราคา) เว้นว่าง = ใช้ spread ปัจจุบัน">
+          <button class="btn gold" id="opRun">รัน Optimizer</button>
+        </div>
+      </div>
+      <div id="opProg" style="display:none"><div class="prog"><i id="opBar" style="width:0"></i></div><div class="muted" style="font-size:12px" id="opStage"></div></div>
+      <div class="muted" style="font-size:12px" id="opMeta"></div>
+      <h3 class="mt">ข้อเสนอแนะ</h3>
+      <div id="opRecs"><div class="empty">ยังไม่มีผล – กด "รัน Optimizer" (ใช้เวลาประมาณ 10–60 วินาที)</div></div>
+      <div class="row mt" id="opApplyRow" style="display:none"><button class="btn primary" id="opApply">Apply รายการที่เลือก</button><span id="opMsg"></span></div>
+      <h3 class="mt">ผลทดสอบนอกตัวอย่าง (Out-of-sample) แยกกลยุทธ์</h3>
+      <div id="opTable" class="tbl-wrap"></div>
+      <div class="grid g2 mt">
+        <div><h3>พารามิเตอร์ที่ใช้งานอยู่</h3><div id="opParams" class="tbl-wrap"></div></div>
+        <div><h3>ประวัติการปรับ (ย้อนกลับได้)</h3><div id="opHist" class="tbl-wrap" style="max-height:300px"></div></div>
+      </div>
+    </div>
+    <div class="card mt" id="gbCard">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="flex:1;min-width:260px"><h3 style="margin:0">กำไรที่คืนตลาด (Profit Give-back) & จำลอง Trailing</h3>
+          <div class="muted" style="font-size:12px;margin-top:4px">ไล่ราคา M1 ระหว่างที่แต่ละออเดอร์เปิดอยู่ เพื่อดูว่าเคยกำไรสูงสุดเท่าไร (MFE) แล้วคืนไปเท่าไร และถ้ามี BE/Trailing ผลจะเป็นอย่างไร</div></div>
+        <div class="actions">
+          <select id="gbDays"><option value="7">7 วัน</option><option value="30" selected>30 วัน</option><option value="90">90 วัน</option></select>
+          <select id="gbSource"><option value="">ทุกที่มา</option></select>
+          <button class="btn gold" id="gbRun">วิเคราะห์</button>
+        </div>
+      </div>
+      <div id="gbSummary" class="grid g6"></div>
+      <h3 class="mt">จำลองย้อนหลัง: ถ้าใช้ BE / Trailing แบบต่าง ๆ</h3>
+      <div id="gbWhatif" class="tbl-wrap"><div class="empty">กด "วิเคราะห์"</div></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">จำลองด้วยแท่ง M1 แบบระวัง (เช็ก SL ก่อนเลื่อนตามราคาใหม่ในแท่งเดียวกัน) · ถ้า SL ไม่ถูกชน ใช้ผลปิดจริงเดิม · ไม่รวม slippage ตอนโดน SL</div>
+      <h3 class="mt">ออเดอร์ที่เคยกำไร ≥ 1 ATR แต่ปิดขาดทุน</h3>
+      <div id="gbRed" class="tbl-wrap" style="max-height:280px"></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><h3>ผลจริงแยกตามกลยุทธ์ / EA</h3><div id="perfStrat" class="tbl-wrap"></div></div>
+      <div class="card"><h3>ความสม่ำเสมอ & ความเสี่ยง</h3><div id="consist"></div></div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card"><h3>กำไร/ขาดทุนตามชั่วโมงเปิดออเดอร์</h3><div class="chart-box"><canvas id="cHour"></canvas></div></div>
+      <div class="card"><h3>กำไร/ขาดทุนตามวัน</h3><div class="chart-box"><canvas id="cWd"></canvas></div></div>
+    </div>
+  </section>
+
+  <!-- ===================== RISK & SETTINGS ===================== -->
+  <section class="page" id="page-risk">
+    <div class="card" id="diagCard">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="flex:1;min-width:240px"><h3 style="margin:0">ตรวจสถานะการออกไม้ (ทำไมยังไม่เข้าออเดอร์?)</h3>
+          <div class="muted" style="font-size:12px;margin-top:4px" id="diagSum"></div></div>
+        <div class="actions">
+          <button class="btn gold" id="diagEnable">เปิด Auto-Trade ทุกกลยุทธ์</button>
+          <button class="btn" id="diagTest" title="ส่ง BUY 0.01 แล้วปิดทันที (เฉพาะบัญชี Demo)">ทดสอบส่งออเดอร์ 0.01</button>
+          <button class="btn" id="diagRefresh">ตรวจใหม่</button>
+        </div>
+      </div>
+      <div class="grid g2">
+        <div id="diagChecks"></div>
+        <div><h3>Auto-Trade ล่าสุด (สัญญาณ → ผล)</h3><div id="diagLog" class="tbl-wrap" style="max-height:330px"></div></div>
+      </div>
+    </div>
+    <div class="grid g3 mt">
+      <div class="card kill-panel">
+        <h3>Kill Switch</h3>
+        <button class="kill-big" id="killBig">STOP</button>
+        <p class="muted" id="killState" style="margin-top:14px">ระบบทำงานปกติ</p>
+        <p class="muted" style="font-size:12px">เมื่อเปิด: ปิดทุก Position + ลบ Pending ทั้งบัญชี และระหว่างที่เปิดอยู่ ถ้ามี EA เปิดออเดอร์ใหม่ ระบบจะปิดให้อัตโนมัติ</p>
+      </div>
+      <div class="card">
+        <h3>สถานะวันนี้</h3>
+        <div id="riskToday"></div>
+      </div>
+      <div class="card">
+        <h3>บันทึกเหตุการณ์</h3>
+        <div class="events" id="events"></div>
+      </div>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card">
+        <h3>กฎความเสี่ยง</h3>
+        <div class="grid g2">
+          <div><label>วิธีกำหนด Lot</label><select id="rLotMode"><option value="fixed">Lot คงที่</option><option value="risk">คำนวณจาก Risk %</option></select></div>
+          <div><label>Lot เริ่มต้น (โหมด Lot คงที่)</label><input type="number" step="0.01" min="0.01" id="rDefLot"></div>
+          <div><label>Lot สูงสุดต่อออเดอร์</label><input type="number" step="0.01" id="rMaxLot"></div>
+          <div><label>Risk ต่อไม้ (%)</label><input type="number" step="0.1" id="rRisk"></div>
+          <div><label>ขาดทุนสูงสุดต่อวัน (%)</label><input type="number" step="0.1" id="rDayPct"></div>
+          <div><label>ขาดทุนสูงสุดต่อวัน ($, 0 = ไม่ใช้)</label><input type="number" step="1" id="rDayMoney"></div>
+          <div><label>จำนวนออเดอร์สูงสุด / วัน</label><input type="number" id="rMaxOrders"></div>
+          <div><label>Position เปิดพร้อมกันสูงสุด</label><input type="number" id="rMaxPos"></div>
+          <div><label>Spread สูงสุด (ราคา)</label><input type="number" step="0.01" id="rSpread"></div>
+          <div style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end">
+            <label class="switch"><input type="checkbox" id="rReqSl">บังคับใส่ SL</label>
+            <label class="switch"><input type="checkbox" id="rAutoKill">Kill อัตโนมัติเมื่อถึงลิมิตรายวัน</label>
+            <label class="switch"><input type="checkbox" id="rAutoRel">ปลดล็อกอัตโนมัติเมื่อขึ้นวันใหม่ (เวลา Server)</label>
+          </div>
+        </div>
+        <button class="btn primary mt" id="rSave">บันทึกกฎความเสี่ยง</button> <span id="rMsg"></span>
+      </div>
+      <div class="card">
+        <h3>Scanner & Auto-Trade</h3>
+        <div class="row">
+          <label class="switch"><input type="checkbox" id="scEnabled">เปิด Scanner</label>
+          <div style="max-width:140px"><label>ทุก ๆ (วินาที)</label><input type="number" id="scInt"></div>
+        </div>
+        <table class="mt"><thead><tr><th>กลยุทธ์</th><th>สแกน</th><th>Auto-trade</th></tr></thead><tbody id="scTable"></tbody></table>
+        <label class="switch mt"><input type="checkbox" id="scRegime">กรองกลยุทธ์ตามสภาวะตลาด (เทรนด์/ไซด์เวย์/ผันผวน)</label>
+        <label class="switch mt"><input type="checkbox" id="scAuto"><b>เปิด Auto-Trade</b>&nbsp;<span class="muted">(ส่งออเดอร์จริงตามสัญญาณ ผ่านกฎความเสี่ยงทุกครั้ง)</span></label>
+        <button class="btn primary mt" id="scSave">บันทึก</button> <span id="scMsg"></span>
+      </div>
+    </div>
+    <div class="card mt" id="tmCard">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h3 style="margin:0">Trade Manager · Breakeven / Trailing Stop / Partial TP</h3>
+        <label class="switch"><input type="checkbox" id="tmEnabled"><b>เปิดใช้งาน</b></label>
+      </div>
+      <div class="muted" style="font-size:12px;margin:6px 0 10px">ระยะทั้งหมดเป็นจำนวนเท่าของ ATR (ปรับตามความผันผวนของทอง) · ระบบเลื่อน SL ไปทางกำไรเท่านั้น ไม่เคยถอย SL · ทำงานทุก 2 วินาทีขณะเปิด Dashboard</div>
+      <div class="grid g4">
+        <div><label class="switch"><input type="checkbox" id="tmBe">Breakeven</label>
+          <label class="mt">เลื่อน SL มาทุนเมื่อกำไร ≥ (×ATR)</label><input type="number" step="0.1" id="tmBeTrig">
+          <label class="mt">ล็อกกำไรเหนือทุน ($)</label><input type="number" step="0.05" id="tmBeLock"></div>
+        <div><label class="switch"><input type="checkbox" id="tmTrail">Trailing Stop</label>
+          <label class="mt">เริ่ม Trail เมื่อกำไร ≥ (×ATR)</label><input type="number" step="0.1" id="tmTrStart">
+          <label class="mt">ระยะห่าง SL จากราคา (×ATR)</label><input type="number" step="0.1" id="tmTrDist"></div>
+        <div><label class="switch"><input type="checkbox" id="tmPartial">Partial Take Profit</label>
+          <label class="mt">ปิดบางส่วนเมื่อกำไร ≥ (×ATR)</label><input type="number" step="0.1" id="tmPtAtr">
+          <label class="mt">ปิดกี่ % ของ Lot</label><input type="number" step="5" id="tmPtPct"></div>
+        <div><label>ATR Timeframe</label><select id="tmTf"><option>M1</option><option>M5</option><option>M15</option><option>M30</option><option>H1</option></select>
+          <label class="mt">จัดการออเดอร์จาก</label><div id="tmSources" style="display:flex;flex-direction:column;gap:4px"></div></div>
+      </div>
+      <div class="muted mt" style="font-size:12px">⚠ EA ที่มี Trailing ของตัวเองอยู่แล้ว (เช่น GoldScalper M1) ไม่ต้องติ๊ก · AIScalper M1 ถูกเทรนโดยไม่มี BE/Trailing การเปิดให้จัดการจะเปลี่ยนผลจากที่โมเดลคาดไว้</div>
+      <button class="btn primary mt" id="tmSave">บันทึก Trade Manager</button> <span id="tmMsg"></span>
+    </div>
+    <div class="grid g2 mt">
+      <div class="card">
+        <h3>Magic Number → ชื่อ EA</h3>
+        <table><thead><tr><th>Magic</th><th>ชื่อที่แสดง</th><th></th></tr></thead><tbody id="eaTable"></tbody></table>
+        <div class="row mt"><button class="btn sm" id="eaAdd">+ เพิ่ม</button><button class="btn primary sm" id="eaSave">บันทึก</button><span id="eaMsg"></span></div>
+      </div>
+      <div class="card">
+        <h3>ตั้งค่าทั่วไป</h3>
+        <div class="grid g2">
+          <div><label>Symbol (ชื่อตามโบรก)</label><input id="stSym"></div>
+          <div><label>Timeframe ของ Scanner</label><select id="stTf"><option>M1</option><option>M5</option><option>M15</option><option>M30</option><option>H1</option></select></div>
+          <div><label>เป้ากำไรรายวัน ($)</label><input type="number" id="stGd"></div>
+          <div><label>เป้ากำไรรายสัปดาห์ ($)</label><input type="number" id="stGw"></div>
+          <div><label>เป้ากำไรรายเดือน ($)</label><input type="number" id="stGm"></div>
+          <div><label>Magic ของ Dashboard</label><input type="number" id="stMagic"></div>
+          <div><label>Asian Session เริ่ม (ชม. server)</label><input type="number" id="stAs"></div>
+          <div><label>Asian Session จบ</label><input type="number" id="stAe"></div>
+          <div style="grid-column:1/-1"><label>AI ที่ใช้วิเคราะห์ / AI Auto-Trade</label><select id="stProv"><option value="anthropic">Claude (Anthropic)</option><option value="openai">ChatGPT (OpenAI)</option></select></div>
+          <div><label>Anthropic API Key</label><input type="password" id="stKey" placeholder="sk-ant-..."></div>
+          <div><label>Claude Model</label><input id="stModel"></div>
+          <div style="grid-column:1/-1"><label>Anthropic Workspace ID (ใส่เมื่อ Key ไม่ได้ผูกกับ workspace – ขึ้นต้นด้วย wrkspc_)</label><input id="stWs" placeholder="wrkspc_..."></div>
+          <div><label>OpenAI API Key</label><input type="password" id="stOKey" placeholder="sk-..."></div>
+          <div><label>ChatGPT Model</label><input id="stOModel"></div>
+          <div style="grid-column:1/-1"><label>บันทึกถึง AI (ข่าว/เหตุการณ์วันนี้ เช่น "CPI สหรัฐ 19:30 ไทย", "FOMC คืนนี้ ห้ามเปิดก่อนข่าว")</label><textarea id="stNews" rows="2"></textarea></div>
+        </div>
+        <button class="btn primary mt" id="stSave">บันทึก</button> <button class="btn mt" id="stTest">ทดสอบการเชื่อมต่อ AI</button> <span id="stMsg"></span>
+        <div id="stTestOut" class="mt"></div>
+      </div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

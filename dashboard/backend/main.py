@@ -8,6 +8,7 @@ If MT5 is not available it starts a DEMO simulator instead.
 """
 import csv
 import io
+import math
 import os
 import secrets
 import threading
@@ -28,6 +29,7 @@ import optimizer
 import news
 import regime
 import market_context as mctx
+import market_hours
 import trade_manager as tmgr
 import store
 import strategies as st
@@ -88,12 +90,16 @@ def guard_live_autotrade():
     if (sc.get("auto_trade") or sc.get("ai_auto")) and sc.get("auto_trade_login") != login:
         store.modify("scanner", lambda d: d.update(auto_trade=False, ai_auto=False))
         risk.log(f"บัญชีจริง {login}: ปิด Auto-Trade/AI Auto-Trade ที่ค้างมาจากบัญชีอื่น – เปิดใหม่เองในหน้า Settings ถ้าต้องการ", "warn")
+    if sc.get("ai_review_mode") == "live" and sc.get("ai_review_login") != login:
+        store.modify("scanner", lambda d: d.update(ai_review_mode="shadow"))
+        risk.log(f"บัญชีจริง {login}: AI รีวิวไม้ (Live) ค้างมาจากบัญชีอื่น – เปลี่ยนเป็น Shadow แล้ว เปิด Live ใหม่เองถ้าต้องการ", "warn")
     _GUARD["login"] = login
 
 
 enable_autotrade_on_demo()
 guard_live_autotrade()
 tm = tmgr.TradeManager(broker, settings, risk.log)
+market = market_hours.MarketWatch(broker, lambda: sym())
 app = FastAPI(title="AI Trader Dashboard")
 
 # ------------------------------------------------------------------ API protection
@@ -764,6 +770,8 @@ def ai_review_tick():
     mode = sc.get("ai_review_mode", "shadow")
     if mode == "off" or not ai_has_key() or store.load("risk")["kill_switch"]:
         return
+    if market.closed_reason():  # market closed: positions can't be changed, don't ask the AI
+        return
     trig = float(sc.get("ai_review_trigger_r", 0.5) or 0.5)
     magic = settings()["dashboard_magic"]
     for p in broker.positions():
@@ -786,6 +794,31 @@ def ai_review_tick():
         review_position(p, cur, r_now, tk, mode, sc)
     for t in [t for t in REVIEW_STATE if t not in {p["ticket"] for p in broker.positions()}]:
         REVIEW_STATE.pop(t, None)
+
+
+def _conf(x):
+    """AI confidence as a finite number in 0..100 (json.loads accepts NaN, which passes every comparison)."""
+    try:
+        c = float(x or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(100.0, c)) if math.isfinite(c) else 0.0
+
+
+def _recheck_review(p, rv, atr):
+    """The AI call can take a minute: re-check the decision against the position and price as they are now."""
+    if store.load("risk")["kill_switch"] or store.load("scanner").get("ai_review_mode") != "live":
+        return "Kill Switch / โหมดรีวิวเปลี่ยนระหว่างรอ AI – ไม่ทำ"
+    now_p = next((x for x in broker.positions() if x["ticket"] == p["ticket"]), None)
+    tk = broker.tick(p["symbol"])
+    if not now_p or not tk:
+        return "ไม่พบ Position หรือราคาล่าสุด – ไม่ทำ"
+    cur = tk["bid"] if now_p["side"] == "BUY" else tk["ask"]
+    if rv["action"] == "CLOSE":
+        return ""
+    act, _, _, prob = ai_review.check({"action": rv["action"], "new_sl": rv.get("new_sl"), "new_tp": rv.get("new_tp")},
+                                      now_p, cur, atr)
+    return prob or ("" if act == rv["action"] else "ผลตรวจซ้ำไม่ตรงกับแผน – ไม่ทำ")
 
 
 def review_position(p, cur, r_now, tk, mode, sc):
@@ -819,7 +852,7 @@ def review_position(p, cur, r_now, tk, mode, sc):
             raise ValueError("อ่าน JSON จากคำตอบไม่ได้: " + (text or "(ว่าง)").strip().replace("\n", " ")[:160])
         act, new_sl, new_tp, prob = ai_review.check(d, p, cur, atr)
         rv.update(ai_action=str(d.get("action", "")).upper() or None, action=act, new_sl=new_sl, new_tp=new_tp,
-                  confidence=float(d.get("confidence") or 0), reason=str(d.get("reason") or ""), problem=prob)
+                  confidence=_conf(d.get("confidence")), reason=str(d.get("reason") or ""), problem=prob)
         if rv["ai_action"] in ("TIGHTEN_SL", "MOVE_TP") and not prob:
             rv["new_sl"], rv["new_tp"] = new_sl, new_tp
         elif rv["ai_action"] in ("TIGHTEN_SL", "MOVE_TP"):  # keep the AI's raw numbers for scoring its advice
@@ -835,6 +868,9 @@ def review_position(p, cur, r_now, tk, mode, sc):
             msg = f"ความมั่นใจ {rv['confidence']} < {min_conf} – ไม่ทำ"
         else:
             try:
+                prob = _recheck_review(p, rv, atr)
+                if prob:
+                    raise HTTPException(409, {"violations": [prob]})
                 if rv["action"] == "CLOSE":
                     r = broker.close_position(p["ticket"], settings()["deviation_points"], comment="AI review close")
                 elif rv["action"] == "TIGHTEN_SL":
@@ -856,6 +892,7 @@ def ai_loop():
     last_eval = 0
     while True:
         try:
+            market.closed_reason()  # keep the tick watch warm so a frozen feed is noticed in time
             ai_autotrade_tick()
         except Exception as e:
             print("[AI]", repr(e))
@@ -1146,6 +1183,9 @@ def set_settings(body: dict = Body(...)):
     if "scanner" in body:
         patch = {**body["scanner"], "auto_trade_user_set": True}
         patch.pop("auto_trade_login", None)
+        patch.pop("ai_review_login", None)
+        if patch.get("ai_review_mode") == "live":  # switched to live by the user on this account
+            patch["ai_review_login"] = (broker.account() or {}).get("login")
         if patch.get("auto_trade") or patch.get("ai_auto"):  # switched on by the user on this account
             patch["auto_trade_login"] = (broker.account() or {}).get("login")
         store.update("scanner", patch)
@@ -1443,6 +1483,10 @@ def rule_plan(ctx):
 
 
 def run_ai(question=None, tf=None, origin="manual"):
+    closed = market.closed_reason()
+    if closed:  # nothing trades: don't send the market data to the AI (and don't pay for the call)
+        return {"source": "closed", "text": f"ตลาดปิด – ไม่ได้ส่งข้อมูลไปถาม AI\n{closed}", "note": closed,
+                "plan": validate_plan({"action": "WAIT", "reason": closed, "source": "rules"})}
     ctx = market_context(tf)
     s = settings()["ai"]
     if not s.get("model"):
@@ -1705,8 +1749,10 @@ def ai_autotrade_tick():
     AI_STATE["last_run"] = int(time.time())
     res = run_ai(origin="auto")
     plan = res["plan"]
-    AI_STATE["last"] = plan
     sig = {"strategy": "AI", "side": plan.get("action", "WAIT"), "entry": plan.get("entry_ref")}
+    if res["source"] == "closed":
+        return _alog(sig, "skip", "ตลาดปิด – ไม่ถาม AI: " + res["note"])
+    AI_STATE["last"] = plan
     if plan.get("action") == "WAIT":
         return _alog(sig, "skip", "AI: WAIT – " + plan.get("reason", ""))
     if plan.get("confidence", 0) < sc.get("ai_min_conf", 65):

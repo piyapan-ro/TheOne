@@ -1347,7 +1347,8 @@ def validate_plan(p, ctx=None):
            "plan_id": p.get("plan_id"), "atr": num(p.get("atr")), "price_at_analysis": num(p.get("price_at_analysis")),
            "analysis_time": p.get("analysis_time"), "liq_alignment": p.get("liq_alignment"),
            "valid_min": _valid_min(p.get("valid_min")),
-           "liq_notes": list(p.get("liq_notes") or []), "liq_problem": p.get("liq_problem") or ""}
+           "liq_notes": list(p.get("liq_notes") or []), "liq_problem": p.get("liq_problem") or "",
+           "filter_problem": p.get("filter_problem") or ""}
     if ctx:
         tf = ctx.get("timeframe")
         ctk = ctx.get("tick") or {}
@@ -1404,6 +1405,15 @@ def validate_plan(p, ctx=None):
     elif out["liq_problem"] and mode == "warn":
         out["warnings"].append(out["liq_problem"])
     out["warnings"] += [n for n in out["liq_notes"] if n.startswith("⚠")]
+    # AI as a filter: only take the side a strategy lane signalled on the last closed bars
+    fmode = store.load("scanner").get("ai_filter_mode", "block")
+    if ctx and fmode != "off":
+        same = [x for x in ctx.get("signals") or [] if x.get("side") == out["action"]]
+        out["filter_problem"] = "" if same else f"ไม่มีสัญญาณกลยุทธ์ฝั่ง {out['action']} ยืนยัน (AI เป็นตัวกรอง)"
+    if out["filter_problem"] and fmode == "block":
+        problems.append(out["filter_problem"])
+    elif out["filter_problem"] and fmode == "warn":
+        out["warnings"].append(out["filter_problem"])
     out["problem"] = "; ".join(problems)
     out["valid"] = not problems
     return out
@@ -1482,6 +1492,11 @@ def rule_plan(ctx):
             "reason": "ทิศทาง TF สวนกัน หรือราคาไม่อยู่ในจุดเข้า – รอ"}
 
 
+FILTER_RULE = ("โหมดตัวกรอง (ระบบบังคับ): BUY/SELL ได้เฉพาะฝั่งเดียวกับสัญญาณใน signals (แท่งที่ปิดล่าสุด) เท่านั้น "
+               "หน้าที่ของคุณคือคัดว่าสัญญาณไหนควรเข้าและวาง SL/TP ให้ดีขึ้น ไม่ใช่หาไม้ใหม่เอง "
+               "ปฏิเสธสัญญาณที่สวนเทรนด์ใหญ่ (D1/H4), เกิดในตลาดไซด์เวย์โดยไม่อยู่ที่ขอบกรอบ หรือใกล้ข่าวแรง – ถ้าไม่มีสัญญาณที่ดีพอให้ WAIT\n")
+
+
 def run_ai(question=None, tf=None, origin="manual"):
     closed = market.closed_reason()
     if closed:  # nothing trades: don't send the market data to the AI (and don't pay for the call)
@@ -1516,6 +1531,7 @@ def run_ai(question=None, tf=None, origin="manual"):
               "Position: ข้อจำกัดของคุณคือ open_positions_ai (ของเลน AI เท่านั้น) – ถ้ามี position ของ AI เปิดอยู่อย่าเปิดสวนทาง · "
               "other_lanes_positions_info เป็นของกลยุทธ์อื่นที่มีโควตาแยก ไม่ใช่ข้อห้ามของคุณ (max_same_side ใช้กับออเดอร์มือเท่านั้น) "
               "ใช้เป็นข้อมูลตลาดได้ แต่ห้ามใช้เป็นเหตุผลให้ WAIT\n\n"
+              + (FILTER_RULE if store.load("scanner").get("ai_filter_mode", "block") == "block" else "") +
               f"ข้อมูลตลาดและบัญชี (JSON):\n{ctx}\n\nคำถาม: {question}\n\n{PLAN_SPEC}")
     model = None
     try:
@@ -1729,7 +1745,7 @@ def ai_reviews_get(days: int = 30, limit: int = 30):
 def ai_state():
     sc = store.load("scanner")
     return {**AI_STATE, "ai_auto": sc.get("ai_auto", False), "interval_min": sc.get("ai_interval_min", 15),
-            "min_conf": sc.get("ai_min_conf", 65), "liquidity_mode": sc.get("ai_liquidity_mode", "block"),
+            "min_conf": sc.get("ai_min_conf", 65), "liquidity_mode": sc.get("ai_liquidity_mode", "block"), "filter_mode": sc.get("ai_filter_mode", "block"),
             "limit_expiry_min": sc.get("ai_limit_expiry_min", 45), "has_key": ai_has_key(),
             "review_mode": sc.get("ai_review_mode", "shadow"), "review_trigger_r": sc.get("ai_review_trigger_r", 0.5),
             "review_min_conf": sc.get("ai_review_min_conf", 60), "gate_mode": sc.get("lane_gate_mode", "block"), "provider": settings()["ai"].get("provider", "anthropic")}
@@ -1747,6 +1763,8 @@ def ai_autotrade_tick():
     if time.time() - AI_STATE["last_run"] < max(1, sc.get("ai_interval_min", 15)) * 60:
         return
     AI_STATE["last_run"] = int(time.time())
+    if sc.get("ai_filter_mode", "block") == "block" and not SCAN["latest"]:
+        return _alog({"strategy": "AI", "side": "WAIT", "entry": None}, "skip", "ไม่มีสัญญาณกลยุทธ์ใหม่ – ไม่ถาม AI (โหมดตัวกรอง)")
     res = run_ai(origin="auto")
     plan = res["plan"]
     sig = {"strategy": "AI", "side": plan.get("action", "WAIT"), "entry": plan.get("entry_ref")}

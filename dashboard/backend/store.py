@@ -68,6 +68,7 @@ DEFAULTS = {
             "SMC": False, "SND": False, "EMA": False, "BB": False, "ASIA": False, "AIPB": False
         },
         "ai_liquidity_mode": "block",   # AI plan against a fresh liquidity sweep: block | warn | off
+        "ai_filter_mode": "block",      # AI as a filter: BUY/SELL only on the side of a fresh strategy signal: block | warn | off
         "ai_limit_expiry_min": 45,      # default validity of AI LIMIT/STOP orders (the AI may set 15..ai_limit_max_min)
         "ai_limit_max_min": 120,
         "ai_review_mode": "shadow",     # AI review of positions going the wrong way: off | shadow | live

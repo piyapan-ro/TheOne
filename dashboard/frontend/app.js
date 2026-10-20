@@ -461,7 +461,7 @@ $("#aiExec").addEventListener("click", (e) => confirmClick(e.currentTarget, "ย
 async function loadAIState() {
   const s = await api("ai/state");
   $("#aiAuto").checked = s.ai_auto; $("#aiInt").value = s.interval_min; $("#aiConf").value = s.min_conf;
-  $("#aiLiq").value = s.liquidity_mode || "block"; $("#aiExp").value = s.limit_expiry_min ?? 45;
+  $("#aiLiq").value = s.liquidity_mode || "block"; $("#aiFilter").value = s.filter_mode || "block"; $("#aiExp").value = s.limit_expiry_min ?? 45;
   $("#aiRev").value = s.review_mode || "shadow"; $("#aiRevR").value = s.review_trigger_r ?? 0.5; $("#aiRevConf").value = s.review_min_conf ?? 60;
   $("#laneGate").value = s.gate_mode || "block";
   loadAIReviews().catch(() => {});
@@ -473,7 +473,7 @@ async function loadAIState() {
   if (s.last && !S.aiPlan) showPlan(s.last);
 }
 $("#aiSave").addEventListener("click", async () => {
-  await api("settings", { method: "POST", body: { scanner: { ai_auto: $("#aiAuto").checked, ai_interval_min: Math.max(1, +$("#aiInt").value || 15), ai_min_conf: +$("#aiConf").value || 65, ai_liquidity_mode: $("#aiLiq").value, ai_limit_expiry_min: Math.max(0, +$("#aiExp").value || 0),
+  await api("settings", { method: "POST", body: { scanner: { ai_auto: $("#aiAuto").checked, ai_interval_min: Math.max(1, +$("#aiInt").value || 15), ai_min_conf: +$("#aiConf").value || 65, ai_liquidity_mode: $("#aiLiq").value, ai_filter_mode: $("#aiFilter").value, ai_limit_expiry_min: Math.max(0, +$("#aiExp").value || 0),
     ai_review_mode: $("#aiRev").value, ai_review_trigger_r: Math.max(0.1, +$("#aiRevR").value || 0.5), ai_review_min_conf: +$("#aiRevConf").value || 60,
     lane_gate_mode: $("#laneGate").value } } });
   toast("บันทึก AI Auto-Trade แล้ว"); loadAIState(); refreshAutoBadge();

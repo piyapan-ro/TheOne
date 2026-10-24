@@ -12,6 +12,8 @@
 
 #include <Trade\Trade.mqh>
 
+#define OBJ_PREFIX "AIEA_"   // prefix of every chart object the EA draws
+
 enum ENUM_LOT_MODE
   {
    LOT_FIXED        = 0, // Fixed lot
@@ -1123,8 +1125,6 @@ double MinStopDistance()
                       SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL));
    return lvl * _Point + SpreadPrice() + 2 * _Point;
   }
-
-#define OBJ_PREFIX "AIEA_"
 
 //+------------------------------------------------------------------+
 //| Chart drawing: zones, structure, entry plan, status panel        |

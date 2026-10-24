@@ -81,7 +81,29 @@ EA ไม่เรียก AI ทุกแท่ง จะเรียกเม
 ประมาณการต่อครั้ง: Claude Sonnet 5.5 ≈ 0.01 USD, Claude Haiku 5.5 ≈ 0.0005 USD ถ้าเรียก 2 ครั้งต่อ 1 ออเดอร์ Sonnet จะอยู่ราว 0.02 USD
 ต้นทุนจริงคำนวณจาก token ที่ AI รายงานกลับทุกครั้ง ดูได้ที่ `GET /api/ea/stats` (ต้นทุนต่อครั้ง, ต่อออเดอร์, รายวัน และ log คำตอบ 300 ครั้งล่าสุด)
 
-## 6. ติดตั้ง
+## 6. ทดสอบใน Strategy Tester
+
+Strategy Tester ของ MT5 ไม่อนุญาตให้ใช้ WebRequest EA จึงเรียก AI ตรง ๆ ใน tester ไม่ได้ ตั้ง `InpTesterMode` ได้ 3 แบบ (บนกราฟจริงค่านี้ไม่มีผล EA ใช้ AI เสมอ):
+
+| โหมด | ทำอะไร | ใช้เมื่อ |
+|---|---|---|
+| **RULES** (ค่าเริ่มต้น) | EA ให้คะแนน BUY/SELL เองจากกฎในตัว (เทรนด์ H4/H1, โครงสร้าง M5, CHOCH, sweep, โซน, ระยะถึงโซนตรงข้าม) แล้วเดินผ่านการยืนยัน/SL/TP/trailing ชุดเดียวกับตอนใช้ AI | ทดสอบระบบจัดการความเสี่ยงและพารามิเตอร์ ฟรี เร็ว |
+| **EXPORT** | เขียนข้อมูลที่จะส่งให้ AI ลงไฟล์ `Common\Files\AIEA_requests.jsonl` ทีละแท่ง ไม่เปิดออเดอร์ | ขั้นแรกของการ backtest ด้วย AI จริง |
+| **REPLAY** | อ่านคำตอบ AI จาก `Common\Files\AIEA_replay.tsv` แล้วเทรดตามนั้น | ขั้นสุดท้ายของการ backtest ด้วย AI จริง |
+
+ขั้นตอน backtest ด้วย AI จริง (เสียเครดิตรอบแรกครั้งเดียว รันซ้ำเพื่อปรับ SL/TP/lot ไม่เสียเพิ่ม):
+
+1. รัน tester ด้วย `InpTesterMode = EXPORT` ช่วงเวลาที่ต้องการ (เงื่อนไขคัดกรองก่อนเรียก AI ทำงานเหมือนจริง จึงได้เฉพาะแท่งที่ EA จะถาม AI จริง ๆ)
+2. ใน `dashboard\backend` รัน (Dashboard ต้องมี API Key แล้ว):
+   ```
+   ..\.venv\Scripts\python ea_backtest.py "%APPDATA%\MetaQuotes\Terminal\Common\Files\AIEA_requests.jsonl" "%APPDATA%\MetaQuotes\Terminal\Common\Files\AIEA_replay.tsv" --max-cost 3
+   ```
+   สคริปต์ถาม AI แท่งละครั้ง พิมพ์ต้นทุนสะสม หยุดเมื่อถึง `--max-cost` (รันซ้ำเพื่อทำต่อได้ ไม่ถามแท่งเดิมซ้ำ) ใส่ `--model claude-haiku-5-5` ถ้าต้องการรอบถูก ๆ ก่อน
+3. รัน tester ด้วย `InpTesterMode = REPLAY` ช่วงเวลาเดียวกัน
+
+ข้อควรระวัง: AI อาจจำราคาทองในอดีตได้จากข้อมูลที่เคยเรียน ผล backtest จึงอาจดีกว่าความจริง ใช้ RULES และการทดสอบบน Demo แบบเดินหน้าจริงประกอบด้วย
+
+## 7. ติดตั้ง
 
 1. เปิด Dashboard (`dashboard\start.bat`) และใส่ API Key ในหน้า Settings
 2. MT5 → Tools → Options → Expert Advisors → ติ๊ก *Allow WebRequest for listed URL* แล้วเพิ่ม `http://127.0.0.1:8000`

@@ -8,6 +8,7 @@
 #property version   "1.00"
 #property description "AI EA for XAUUSD M5. Needs the AI Trader Dashboard (start.bat) running on this PC."
 #property description "Tools > Options > Expert Advisors > Allow WebRequest for: http://127.0.0.1:8000"
+#property description "Strategy Tester: WebRequest is unavailable, see InpTesterMode (rules / export / replay)."
 
 #include <Trade\Trade.mqh>
 
@@ -15,6 +16,13 @@ enum ENUM_LOT_MODE
   {
    LOT_FIXED        = 0, // Fixed lot
    LOT_RISK_PERCENT = 1  // Risk % of equity per trade
+  };
+
+enum ENUM_TESTER_MODE
+  {
+   TESTER_RULES  = 0, // Rules: built-in scoring instead of the AI (free)
+   TESTER_EXPORT = 1, // Export: write AI requests to a file, no trades
+   TESTER_REPLAY = 2  // Replay: read AI answers made by ea_backtest.py
   };
 
 input group "=== AI bridge (Dashboard) ==="
@@ -60,6 +68,14 @@ input int             InpMinBarsBetween   = 3;               // Min closed M5 ba
 input int             InpNoneCooldownBars = 3;               // Bars to wait after AI answered NONE
 input int             InpMaxCallsPerDay   = 40;              // Max AI calls per day (0 = off)
 
+input group "=== Strategy Tester (WebRequest unavailable there) ==="
+input ENUM_TESTER_MODE InpTesterMode     = TESTER_RULES;    // Tester mode (ignored on a live chart)
+input string          InpTesterFile       = "AIEA_requests.jsonl"; // Export file (Common\Files)
+input string          InpReplayFile       = "AIEA_replay.tsv";     // Replay file (Common\Files)
+input int             InpRuleMinScore     = 60;              // Rules: min score of the chosen side
+input int             InpRuleMinGap       = 15;              // Rules: min lead over the other side
+input double          InpRuleMaxWaitAtr   = 2.0;             // Rules: retest zone within ATR x of price
+
 input group "=== Analysis ==="
 input int             InpPivot            = 3;               // Swing pivot strength (bars each side)
 input int             InpSendBars         = 36;              // Closed M5 bars sent to the AI
@@ -104,6 +120,7 @@ struct Structure
    int               chochDir; double chochLevel; int chochAgo;
    string            sweeps;   // JSON array
    int               sweepAgo; // newest sweep, bars ago (999 = none)
+   int               sweepSide;// newest sweep: 1 = buy_side (above a high), -1 = sell_side
    double            lastHigh; double lastLow;
   };
 
@@ -137,6 +154,8 @@ double    g_costToday = 0.0;
 int       g_lastBuy = 0, g_lastSell = 0;
 Zone      g_zones[];
 Structure g_m5;
+bool      g_tester = false;
+string    g_rpKey[], g_rpVal[];   // replay file: bar_time -> answer JSON
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -145,10 +164,20 @@ int OnInit()
    trade.SetDeviationInPoints((ulong)MathMax(1, MathRound(InpMaxSlippagePrice / _Point)));
    trade.SetTypeFillingBySymbol(_Symbol);
    g_plan.active = false;
-   if(InpApiToken == "")
+   g_tester = (bool)MQLInfoInteger(MQL_TESTER);
+   if(g_tester)
+     {
+      if(InpTesterMode == TESTER_REPLAY && !LoadReplay())
+        {
+         PrintFormat("AIEA: replay file '%s' not found in Common\\Files - run ea_backtest.py on the export first", InpReplayFile);
+         return(INIT_FAILED);
+        }
+      PrintFormat("AIEA tester mode: %s", InpTesterMode == TESTER_RULES ? "RULES (built-in scoring, no AI)" :
+                  (InpTesterMode == TESTER_EXPORT ? "EXPORT requests to Common\\Files\\" + InpTesterFile :
+                   StringFormat("REPLAY %d AI answers from Common\\Files\\%s", ArraySize(g_rpKey), InpReplayFile)));
+     }
+   else if(InpApiToken == "")
       Print("AIEA: InpApiToken is empty - copy it from dashboard\\data\\api_token.txt");
-   if(MQLInfoInteger(MQL_TESTER))
-      Print("AIEA: WebRequest does not work in the Strategy Tester - the EA will not trade there.");
    EventSetTimer(1);
    return(INIT_SUCCEEDED);
   }
@@ -281,7 +310,7 @@ void ReadStructure(const MqlRates &r[], const int n, const Swing &sw[], Structur
   {
    int p = MathMax(1, InpPivot);
    s.trend = 0; s.bosDir = 0; s.bosAgo = 999; s.bosLevel = 0; s.chochDir = 0; s.chochAgo = 999; s.chochLevel = 0;
-   s.sweeps = ""; s.sweepAgo = 999; s.lastHigh = 0; s.lastLow = 0;
+   s.sweeps = ""; s.sweepAgo = 999; s.sweepSide = 0; s.lastHigh = 0; s.lastLow = 0;
    double sh = 0, sl = 0; bool shUsed = true, slUsed = true;
    int next = 0, nsw = ArraySize(sw), sweepsN = 0;
    string sweeps[];
@@ -306,7 +335,7 @@ void ReadStructure(const MqlRates &r[], const int n, const Swing &sw[], Structur
            {
             int m = ArraySize(sweeps); ArrayResize(sweeps, m + 1);
             sweeps[m] = StringFormat("{\"side\":\"buy_side\",\"level\":%s,\"bars_ago\":%d}", D(sh), ago);
-            if(ago < s.sweepAgo) s.sweepAgo = ago;
+            if(ago < s.sweepAgo) { s.sweepAgo = ago; s.sweepSide = 1; }
             shUsed = true;   // liquidity taken
            }
         }
@@ -322,7 +351,7 @@ void ReadStructure(const MqlRates &r[], const int n, const Swing &sw[], Structur
            {
             int m = ArraySize(sweeps); ArrayResize(sweeps, m + 1);
             sweeps[m] = StringFormat("{\"side\":\"sell_side\",\"level\":%s,\"bars_ago\":%d}", D(sl), ago);
-            if(ago < s.sweepAgo) s.sweepAgo = ago;
+            if(ago < s.sweepAgo) { s.sweepAgo = ago; s.sweepSide = -1; }
             slUsed = true;
            }
         }
@@ -486,7 +515,13 @@ void AskAI()
    g_lastCallBar = g_lastBar;
    g_callsToday++;
    string resp;
-   if(!PostJson("/api/ea/decide", BuildRequest(), InpTimeoutMs, resp))
+   if(g_tester)
+     {
+      if(InpTesterMode == TESTER_RULES)       resp = RulesDecide();
+      else if(InpTesterMode == TESTER_EXPORT) resp = ExportRequest();
+      else                                    resp = ReplayDecide();
+     }
+   else if(!PostJson("/api/ea/decide", BuildRequest(), InpTimeoutMs, resp))
      {
       AiFailed(resp);
       return;
@@ -563,6 +598,153 @@ string BuildRequest()
                        bars, zones, structure, g_h1ctx, g_h4ctx);
   }
 
+
+//+------------------------------------------------------------------+
+//| Strategy Tester: rules / export / replay (same answer JSON as the |
+//| Dashboard, so the confirmation and risk code is identical)        |
+//+------------------------------------------------------------------+
+string BarKey() { int n = ArraySize(g_m5r); return TimeToString(g_m5r[n - 1].time, TIME_DATE | TIME_MINUTES); }
+
+string NoneAnswer(const int buy, const int sell, const string why)
+  {
+   return StringFormat("{\"ok\":true,\"plan_id\":\"T%s\",\"cost_usd\":0,\"decision\":\"NONE\",\"buy_score\":%d,\"sell_score\":%d,"
+                       "\"setup\":\"none\",\"zone_id\":\"\",\"entry\":0,\"invalidation\":0,\"zone_low\":0,\"zone_high\":0,"
+                       "\"valid_bars\":0,\"note\":\"\",\"reject\":\"%s\"}", BarKey(), buy, sell, JsonEscape(why));
+  }
+
+//--- pick the entry zone of one side the way ea_ai.finalize() does; returns setup or "" with the zone index
+string PickZone(const int dir, int &zi, const double price)
+  {
+   zi = -1;
+   string setup = "";
+   bool smc = (g_m5.chochAgo < InpEventLookback && g_m5.chochDir == dir &&
+               g_m5.sweepAgo >= g_m5.chochAgo && g_m5.sweepSide == -dir);
+   // 1) breakout / breakdown confirmed by a closed bar
+   for(int i = 0; i < ArraySize(g_zones); i++)
+     {
+      if(!ZoneSideOk(dir, g_zones[i])) continue;
+      if(g_zones[i].flip == (dir > 0 ? "broken_up" : "broken_down")) { zi = i; return "breakout"; }
+     }
+   // 2) retest: nearest same-side zone that price has not closed through
+   double best = DBL_MAX;
+   for(int i = 0; i < ArraySize(g_zones); i++)
+     {
+      Zone z = g_zones[i];
+      if(!ZoneSideOk(dir, z)) continue;
+      bool below = (dir > 0 && z.hi <= price + 0.2 * g_atr), above = (dir < 0 && z.lo >= price - 0.2 * g_atr);
+      if(!below && !above) continue;
+      double d = MathAbs(price - (dir > 0 ? z.hi : z.lo));
+      if(d < best) { best = d; zi = i; }
+     }
+   if(zi < 0 || best > InpRuleMaxWaitAtr * g_atr) { zi = -1; return ""; }
+   return smc ? "smc_retest" : "retest";
+  }
+
+bool ZoneSideOk(const int dir, const Zone &z)
+  {
+   return dir > 0 ? (z.kind == "support" || z.kind == "bull_ob") : (z.kind == "resistance" || z.kind == "bear_ob");
+  }
+
+//--- distance from the entry to the nearest opposing zone (room for the trade)
+double RoomTo(const int dir, const double entry)
+  {
+   double room = DBL_MAX;
+   for(int i = 0; i < ArraySize(g_zones); i++)
+     {
+      Zone z = g_zones[i];
+      if(ZoneSideOk(dir, z)) continue;
+      double d = dir > 0 ? z.lo - entry : entry - z.hi;
+      if(d > 0 && d < room) room = d;
+     }
+   return room;
+  }
+
+int SideScore(const int dir, const string setup, const int zi)
+  {
+   int sc = 30;
+   string e4 = JsonGet(g_h4ctx, "ema_trend"), e1 = JsonGet(g_h1ctx, "ema_trend");
+   string s4 = JsonGet(g_h4ctx, "structure"), s1 = JsonGet(g_h1ctx, "structure");
+   string up = "up", dn = "down", want = dir > 0 ? up : dn, against = dir > 0 ? dn : up;
+   sc += (e4 == want) ? 15 : (e4 == against ? -15 : 0);
+   sc += (e1 == want) ? 10 : (e1 == against ? -10 : 0);
+   sc += (s4 == want) ? 5  : (s4 == against ? -5  : 0);
+   sc += (s1 == want) ? 5  : (s1 == against ? -5  : 0);
+   sc += (g_m5.trend == dir) ? 10 : (g_m5.trend == -dir ? -10 : 0);
+   if(g_m5.chochAgo < InpEventLookback) sc += (g_m5.chochDir == dir) ? 10 : -10;
+   if(g_m5.sweepAgo < InpEventLookback) sc += (g_m5.sweepSide == -dir) ? 8 : -8;
+   if(setup == "") return sc - 20;
+   Zone z = g_zones[zi];
+   sc += 10;
+   if(z.touches >= 2) sc += 5;
+   if(z.kind == "bull_ob" || z.kind == "bear_ob") sc += 5;
+   if(setup == "smc_retest") sc += 10;
+   if(setup == "breakout") sc += 5;
+   double entry = dir > 0 ? z.hi : z.lo, inval = dir > 0 ? z.lo : z.hi;
+   double risk = MathAbs(entry - inval) + InpSlBufferAtr * g_atr;
+   if(RoomTo(dir, entry) < 1.5 * risk) sc -= 15;
+   return MathMax(0, MathMin(100, sc));
+  }
+
+string RulesDecide()
+  {
+   int n = ArraySize(g_m5r);
+   double price = g_m5r[n - 1].close;
+   int zb, zs;
+   string sb = PickZone(1, zb, price), ss = PickZone(-1, zs, price);
+   int buy = SideScore(1, sb, zb), sell = SideScore(-1, ss, zs);
+   int dir = (buy > sell) ? 1 : -1;
+   int me = dir > 0 ? buy : sell, other = dir > 0 ? sell : buy;
+   string setup = dir > 0 ? sb : ss;
+   int zi = dir > 0 ? zb : zs;
+   if(me < InpRuleMinScore)          return NoneAnswer(buy, sell, StringFormat("score %d < %d", me, InpRuleMinScore));
+   if(me - other < InpRuleMinGap)    return NoneAnswer(buy, sell, StringFormat("scores too close (%d vs %d)", buy, sell));
+   if(setup == "")                   return NoneAnswer(buy, sell, "no zone to trade from");
+   Zone z = g_zones[zi];
+   int valid = (setup == "breakout") ? 2 : 8;
+   return StringFormat("{\"ok\":true,\"plan_id\":\"T%s\",\"cost_usd\":0,\"decision\":\"%s\",\"buy_score\":%d,\"sell_score\":%d,"
+                       "\"setup\":\"%s\",\"zone_id\":\"%s\",\"entry\":%s,\"invalidation\":%s,\"zone_low\":%s,\"zone_high\":%s,"
+                       "\"valid_bars\":%d,\"note\":\"rules\",\"reject\":\"\"}",
+                       BarKey(), dir > 0 ? "BUY" : "SELL", buy, sell, setup, z.id,
+                       D(dir > 0 ? z.hi : z.lo), D(dir > 0 ? z.lo : z.hi), D(z.lo), D(z.hi), valid);
+  }
+
+string ExportRequest()
+  {
+   int h = FileOpen(InpTesterFile, FILE_READ | FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ, 0, CP_UTF8);
+   if(h == INVALID_HANDLE) return NoneAnswer(0, 0, StringFormat("cannot open export file (error %d)", GetLastError()));
+   FileSeek(h, 0, SEEK_END);
+   FileWriteString(h, BuildRequest() + "\n");
+   FileClose(h);
+   return NoneAnswer(0, 0, "exported - run ea_backtest.py, then replay");
+  }
+
+bool LoadReplay()
+  {
+   ArrayResize(g_rpKey, 0); ArrayResize(g_rpVal, 0);
+   int h = FileOpen(InpReplayFile, FILE_READ | FILE_TXT | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE, 0, CP_UTF8);
+   if(h == INVALID_HANDLE) return false;
+   while(!FileIsEnding(h))
+     {
+      string line = FileReadString(h);
+      int tab = StringFind(line, "\t");
+      if(tab <= 0) continue;
+      int m = ArraySize(g_rpKey);
+      ArrayResize(g_rpKey, m + 1); ArrayResize(g_rpVal, m + 1);
+      g_rpKey[m] = StringSubstr(line, 0, tab);
+      g_rpVal[m] = StringSubstr(line, tab + 1);
+     }
+   FileClose(h);
+   return ArraySize(g_rpKey) > 0;
+  }
+
+string ReplayDecide()
+  {
+   string key = BarKey();
+   for(int i = 0; i < ArraySize(g_rpKey); i++)
+      if(g_rpKey[i] == key) return g_rpVal[i];
+   return NoneAnswer(0, 0, "no AI answer for this bar in the replay file");
+  }
+
 //+------------------------------------------------------------------+
 //| Confirmation before the market order                              |
 //+------------------------------------------------------------------+
@@ -627,6 +809,7 @@ void CheckPlan(const bool newBar)
    PrintFormat("AI %s %.2f lots @ %s SL %s TP %s  plan %s (%s %s)", dir > 0 ? "BUY" : "SELL", lot, D(px), D(sl), D(tp),
                g_plan.id, g_plan.setup, g_plan.zoneId);
    string resp;
+   if(!g_tester)
    PostJson("/api/ea/report", StringFormat("{\"plan_id\":\"%s\",\"status\":\"opened\",\"ticket\":%I64u,\"price\":%s,\"lot\":%.2f}",
                                            g_plan.id, trade.ResultOrder(), D(px), lot), 5000, resp);
    g_status = dir > 0 ? "AI BUY" : "AI SELL";
@@ -660,6 +843,7 @@ void DropPlan(const string status, const string why)
   {
    if(!g_plan.active) return;
    string resp;
+   if(!g_tester)
    PostJson("/api/ea/report", StringFormat("{\"plan_id\":\"%s\",\"status\":\"%s\",\"reason\":\"%s\"}", g_plan.id, status, JsonEscape(why)), 5000, resp);
    if(InpDebug) PrintFormat("AI plan %s %s: %s", g_plan.id, status, why);
    g_plan.active = false;

@@ -221,13 +221,14 @@ def finalize(ai, req, c):
     return out
 
 
-def decide(req, ai_settings, headers_fn):
-    """Main entry for /api/ea/decide. Never raises: errors come back as {"ok": false, "error": ...}."""
-    c = cfg()
+def decide(req, ai_settings, headers_fn, overrides=None):
+    """Main entry for /api/ea/decide. Never raises: errors come back as {"ok": false, "error": ...}.
+    overrides: config keys for one call (ea_backtest.py uses model / effort / no_budget / no_log)."""
+    c = {**cfg(), **(overrides or {})}
     plan_id = uuid.uuid4().hex[:12]
     if not c.get("enabled", True):
         return {"ok": False, "error": "AI EA ถูกปิดใน Dashboard", "plan_id": plan_id}
-    budget = float(c.get("daily_budget_usd") or 0)
+    budget = 0 if c.get("no_budget") else float(c.get("daily_budget_usd") or 0)
     if budget > 0 and spent_today() >= budget:
         return {"ok": False, "error": f"ใช้งบ AI วันนี้ครบ {budget} USD แล้ว", "plan_id": plan_id}
     prov = ai_settings.get("provider", "anthropic")
@@ -250,7 +251,8 @@ def decide(req, ai_settings, headers_fn):
         ai, res, err = None, None, f"{type(e).__name__}: {str(e)[:180]}"
     pin, pout = _price(model, c)
     cost = round(tin / 1e6 * pin + tout / 1e6 * pout, 5)
-    _log(plan_id, req, model, ai, res, err, cost, tin, tout, time.time() - t0)
+    if not c.get("no_log"):
+        _log(plan_id, req, model, ai, res, err, cost, tin, tout, time.time() - t0)
     if err:
         return {"ok": False, "error": err, "plan_id": plan_id, "cost_usd": cost}
     return {"ok": True, "plan_id": plan_id, "model": model, "cost_usd": cost, **res}

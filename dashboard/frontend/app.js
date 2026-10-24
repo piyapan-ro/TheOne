@@ -464,6 +464,7 @@ async function loadAIState() {
   $("#aiLiq").value = s.liquidity_mode || "block"; $("#aiFilter").value = s.filter_mode || "block"; $("#aiExp").value = s.limit_expiry_min ?? 45;
   $("#aiRev").value = s.review_mode || "shadow"; $("#aiRevR").value = s.review_trigger_r ?? 0.5; $("#aiRevConf").value = s.review_min_conf ?? 60;
   $("#laneGate").value = s.gate_mode || "block";
+  $("#gateTrend").value = (s.gate_trend_tfs || []).join(","); $("#gateHours").value = (s.gate_block_hours_utc || []).join(",");
   loadAIReviews().catch(() => {});
   loadAIJournal().catch(() => {});
   try { const rg = await api("regime"); $("#aiAutoInfo").dataset.reg = rg.label; } catch (e) {}
@@ -475,7 +476,8 @@ async function loadAIState() {
 $("#aiSave").addEventListener("click", async () => {
   await api("settings", { method: "POST", body: { scanner: { ai_auto: $("#aiAuto").checked, ai_interval_min: Math.max(1, +$("#aiInt").value || 15), ai_min_conf: +$("#aiConf").value || 65, ai_liquidity_mode: $("#aiLiq").value, ai_filter_mode: $("#aiFilter").value, ai_limit_expiry_min: Math.max(0, +$("#aiExp").value || 0),
     ai_review_mode: $("#aiRev").value, ai_review_trigger_r: Math.max(0.1, +$("#aiRevR").value || 0.5), ai_review_min_conf: +$("#aiRevConf").value || 60,
-    lane_gate_mode: $("#laneGate").value } } });
+    lane_gate_mode: $("#laneGate").value, gate_trend_tfs: $("#gateTrend").value.split(",").filter(Boolean),
+    gate_block_hours_utc: [...new Set($("#gateHours").value.split(",").map(x => parseInt(x, 10)).filter(x => x >= 0 && x <= 23))] } } });
   toast("บันทึก AI Auto-Trade แล้ว"); loadAIState(); refreshAutoBadge();
 });
 async function loadAIJournal() {

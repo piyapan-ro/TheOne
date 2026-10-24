@@ -186,6 +186,8 @@
           <div style="max-width:130px"><label>รีวิวเมื่อติดลบ ≥ (R)</label><input type="number" step="0.1" id="aiRevR"></div>
           <div style="max-width:130px"><label>ทำจริงเมื่อมั่นใจ ≥</label><input type="number" id="aiRevConf"></div>
           <div style="max-width:190px"><label>ตัวกรองบริบท (เลนกลยุทธ์)</label><select id="laneGate"><option value="block">บล็อก</option><option value="warn">บันทึกอย่างเดียว</option><option value="off">ปิด</option></select></div>
+          <div style="max-width:150px"><label>ห้ามสวนเทรนด์ (EMA50/200)</label><select id="gateTrend"><option value="H1,H4">H1 + H4 สวนทั้งคู่</option><option value="H1">H1</option><option value="H4">H4</option><option value="">ปิด</option></select></div>
+          <div style="max-width:150px"><label>ชั่วโมงห้ามเข้า (UTC, คั่นด้วย ,)</label><input type="text" id="gateHours" placeholder="เช่น 0,23"></div>
           <div class="actions"><button class="btn sm" id="aiSave">บันทึก</button></div>
         </div>
         <div class="muted" style="font-size:12px" id="aiAutoInfo"></div>

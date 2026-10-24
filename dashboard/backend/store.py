@@ -55,6 +55,7 @@ DEFAULTS = {
         "0": "Manual",
         "260109": "GoldScalper M1",
         "260110": "AIScalper M1",
+        "260120": "AI EA M5",
         "777000": "Dashboard"
     },
     "scanner": {
@@ -83,6 +84,20 @@ DEFAULTS = {
     "optimizer": {"history": []},       # applied changes (for rollback)
     "notes": {},
     "runtime": {"traded": [], "partial_done": []},
+    "ea_ai": {                          # AI EA (EA/AIEA_M5.mq5) - the EA asks /api/ea/decide on closed M5 bars
+        "enabled": True,
+        "model": "",                    # "" = the model of the AI settings above
+        "effort": "low",                # output_config.effort ("" = model default)
+        "max_tokens": 3000,
+        "timeout_sec": 45,
+        "min_score": 60,                # chosen side needs this score...
+        "min_gap": 15,                  # ...and this lead over the other side, otherwise NONE
+        "max_wait_atr": 2.0,            # retest zone must be within N x ATR(M5) of price
+        "max_valid_bars": 12,
+        "daily_budget_usd": 1.0,        # no AI calls (= no new EA orders) after this much spend per UTC day (0 = off)
+        "price_in": 2.0, "price_out": 10.0  # USD / 1M tokens for models not in ea_ai.PRICES
+    },
+    "ea_ai_stats": {"days": {}, "log": []},
     "symbols": {},                       # extra symbols (e.g. BTCUSD) - see symbols.py  # survives restarts: signals already traded, partial TPs done
 }
 

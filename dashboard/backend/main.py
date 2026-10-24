@@ -59,17 +59,19 @@ risk = RiskManager(broker, settings)
 
 
 def enable_autotrade_on_demo():
-    """On a DEMO account of a real MT5 terminal turn Auto-Trade on for every strategy - unless the user
-    has already chosen the Auto-Trade settings themselves. The simulator and real accounts are never
-    switched on automatically."""
+    """First start on a DEMO account of a real MT5 terminal: turn Auto-Trade on for every strategy.
+    Runs once only - the first time there is no scanner.json yet. Anything found in scanner.json
+    (saved from the Settings page or edited by hand) is the user's choice and is never overridden,
+    so a restart cannot switch lanes back to Live. The simulator and real accounts are never switched on."""
+    if os.path.exists(os.path.join(store.DATA_DIR, "scanner.json")):
+        return
     acc = broker.account() or {}
-    sc = store.load("scanner")
-    if broker.mode == "live" and acc.get("is_demo") and not sc.get("auto_trade_user_set"):
+    if broker.mode == "live" and acc.get("is_demo"):
         def on(d):
-            d.update(enabled=True, auto_trade=True, ai_auto=True, auto_trade_login=acc.get("login"),
+            d.update(enabled=True, auto_trade=True, ai_auto=True, auto_trade_user_set=True, auto_trade_login=acc.get("login"),
                      auto_trade_strategies={k: True for k in d["strategies"]})
         store.modify("scanner", on)
-        print("[AUTO] Demo account -> Auto-Trade ON for all strategies")
+        print("[AUTO] Demo account (first start) -> Auto-Trade ON for all strategies")
 
 
 _GUARD = {"login": None}
@@ -504,20 +506,47 @@ def _gate_context(S, tf):
     return ctx
 
 
+def gate_trend_flag(ctx, side, tfs):
+    """Reason when `side` goes against the trend on every TF in tfs (empty tfs = check off), else ''."""
+    tfs = [t for t in (tfs or []) if (ctx.get(t) or {}).get("trend")]
+    against = "DOWN" if side == "BUY" else "UP"
+    if tfs and all(ctx[t]["trend"] == against for t in tfs):
+        return f"สวนเทรนด์ {'+'.join(tfs)} ({against})"
+    return ""
+
+
+def gate_hour_flag(utc_hour, hours):
+    """Reason when the signal falls in a blocked UTC hour, else ''."""
+    try:
+        blocked = {int(h) % 24 for h in (hours or [])}
+    except (TypeError, ValueError):
+        blocked = set()
+    return f"ชั่วโมง {utc_hour:02d}:xx UTC อยู่ในช่วงที่ปิดเทรด (rollover/สเปรดกว้าง)" if utc_hour in blocked else ""
+
+
 def context_gate(S, code, lane, side, entry, sl, tf):
     """Checks a strategy signal against the market context the AI already uses:
     1) a fresh liquidity sweep against the trade, 2) chasing the day's extreme after most of the ADR is used,
     3) a resistance / support zone or untaken liquidity pool closer than 0.5R in the trade direction,
-    4) AIPB on the same side as one of its own input lanes that is already in a position (= the same trade twice).
+    4) AIPB on the same side as one of its own input lanes that is already in a position (= the same trade twice),
+    5) counter-trend: the side opposes the EMA50/EMA200 trend on every TF in gate_trend_tfs (default H1+H4),
+    6) a blocked UTC hour (default 00h: the daily rollover, wide spreads and exits within minutes).
     Returns a list of reasons (empty = ok)."""
     out = []
     buy = side == "BUY"
     risk_d = abs(entry - sl) or 1e-9
+    sc = store.load("scanner")
+    hour_flag = gate_hour_flag(int(((risk.server_now() - (risk.offset or 0)) // 3600) % 24), sc.get("gate_block_hours_utc", [0]))
+    if hour_flag:
+        out.append(hour_flag)
     try:
         ctx = _gate_context(S, tf)
     except Exception as e:
         print("[GATE]", repr(e))
         return out
+    trend_flag = gate_trend_flag(ctx, side, sc.get("gate_trend_tfs", ["H1", "H4"]))
+    if trend_flag:
+        out.append(trend_flag)
     a = (ctx.get(tf) or {}).get("atr")
     h1 = (ctx.get("H1") or {}).get("atr") or a
     liq = ctx.get("liquidity")
@@ -1347,7 +1376,8 @@ def validate_plan(p, ctx=None):
            "plan_id": p.get("plan_id"), "atr": num(p.get("atr")), "price_at_analysis": num(p.get("price_at_analysis")),
            "analysis_time": p.get("analysis_time"), "liq_alignment": p.get("liq_alignment"),
            "valid_min": _valid_min(p.get("valid_min")),
-           "liq_notes": list(p.get("liq_notes") or []), "liq_problem": p.get("liq_problem") or ""}
+           "liq_notes": list(p.get("liq_notes") or []), "liq_problem": p.get("liq_problem") or "",
+           "filter_problem": p.get("filter_problem") or ""}
     if ctx:
         tf = ctx.get("timeframe")
         ctk = ctx.get("tick") or {}
@@ -1404,6 +1434,15 @@ def validate_plan(p, ctx=None):
     elif out["liq_problem"] and mode == "warn":
         out["warnings"].append(out["liq_problem"])
     out["warnings"] += [n for n in out["liq_notes"] if n.startswith("⚠")]
+    # AI as a filter: only take the side a strategy lane signalled on the last closed bars
+    fmode = store.load("scanner").get("ai_filter_mode", "block")
+    if ctx and fmode != "off":
+        same = [x for x in ctx.get("signals") or [] if x.get("side") == out["action"]]
+        out["filter_problem"] = "" if same else f"ไม่มีสัญญาณกลยุทธ์ฝั่ง {out['action']} ยืนยัน (AI เป็นตัวกรอง)"
+    if out["filter_problem"] and fmode == "block":
+        problems.append(out["filter_problem"])
+    elif out["filter_problem"] and fmode == "warn":
+        out["warnings"].append(out["filter_problem"])
     out["problem"] = "; ".join(problems)
     out["valid"] = not problems
     return out
@@ -1482,6 +1521,11 @@ def rule_plan(ctx):
             "reason": "ทิศทาง TF สวนกัน หรือราคาไม่อยู่ในจุดเข้า – รอ"}
 
 
+FILTER_RULE = ("โหมดตัวกรอง (ระบบบังคับ): BUY/SELL ได้เฉพาะฝั่งเดียวกับสัญญาณใน signals (แท่งที่ปิดล่าสุด) เท่านั้น "
+               "หน้าที่ของคุณคือคัดว่าสัญญาณไหนควรเข้าและวาง SL/TP ให้ดีขึ้น ไม่ใช่หาไม้ใหม่เอง "
+               "ปฏิเสธสัญญาณที่สวนเทรนด์ใหญ่ (D1/H4), เกิดในตลาดไซด์เวย์โดยไม่อยู่ที่ขอบกรอบ หรือใกล้ข่าวแรง – ถ้าไม่มีสัญญาณที่ดีพอให้ WAIT\n")
+
+
 def run_ai(question=None, tf=None, origin="manual"):
     closed = market.closed_reason()
     if closed:  # nothing trades: don't send the market data to the AI (and don't pay for the call)
@@ -1516,6 +1560,7 @@ def run_ai(question=None, tf=None, origin="manual"):
               "Position: ข้อจำกัดของคุณคือ open_positions_ai (ของเลน AI เท่านั้น) – ถ้ามี position ของ AI เปิดอยู่อย่าเปิดสวนทาง · "
               "other_lanes_positions_info เป็นของกลยุทธ์อื่นที่มีโควตาแยก ไม่ใช่ข้อห้ามของคุณ (max_same_side ใช้กับออเดอร์มือเท่านั้น) "
               "ใช้เป็นข้อมูลตลาดได้ แต่ห้ามใช้เป็นเหตุผลให้ WAIT\n\n"
+              + (FILTER_RULE if store.load("scanner").get("ai_filter_mode", "block") == "block" else "") +
               f"ข้อมูลตลาดและบัญชี (JSON):\n{ctx}\n\nคำถาม: {question}\n\n{PLAN_SPEC}")
     model = None
     try:
@@ -1729,10 +1774,12 @@ def ai_reviews_get(days: int = 30, limit: int = 30):
 def ai_state():
     sc = store.load("scanner")
     return {**AI_STATE, "ai_auto": sc.get("ai_auto", False), "interval_min": sc.get("ai_interval_min", 15),
-            "min_conf": sc.get("ai_min_conf", 65), "liquidity_mode": sc.get("ai_liquidity_mode", "block"),
+            "min_conf": sc.get("ai_min_conf", 65), "liquidity_mode": sc.get("ai_liquidity_mode", "block"), "filter_mode": sc.get("ai_filter_mode", "block"),
             "limit_expiry_min": sc.get("ai_limit_expiry_min", 45), "has_key": ai_has_key(),
             "review_mode": sc.get("ai_review_mode", "shadow"), "review_trigger_r": sc.get("ai_review_trigger_r", 0.5),
-            "review_min_conf": sc.get("ai_review_min_conf", 60), "gate_mode": sc.get("lane_gate_mode", "block"), "provider": settings()["ai"].get("provider", "anthropic")}
+            "review_min_conf": sc.get("ai_review_min_conf", 60), "gate_mode": sc.get("lane_gate_mode", "block"),
+            "gate_trend_tfs": sc.get("gate_trend_tfs", ["H1", "H4"]), "gate_block_hours_utc": sc.get("gate_block_hours_utc", [0]),
+            "provider": settings()["ai"].get("provider", "anthropic")}
 
 
 def ai_has_key():
@@ -1747,6 +1794,8 @@ def ai_autotrade_tick():
     if time.time() - AI_STATE["last_run"] < max(1, sc.get("ai_interval_min", 15)) * 60:
         return
     AI_STATE["last_run"] = int(time.time())
+    if sc.get("ai_filter_mode", "block") == "block" and not SCAN["latest"]:
+        return _alog({"strategy": "AI", "side": "WAIT", "entry": None}, "skip", "ไม่มีสัญญาณกลยุทธ์ใหม่ – ไม่ถาม AI (โหมดตัวกรอง)")
     res = run_ai(origin="auto")
     plan = res["plan"]
     sig = {"strategy": "AI", "side": plan.get("action", "WAIT"), "entry": plan.get("entry_ref")}

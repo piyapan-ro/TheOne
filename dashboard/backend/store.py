@@ -68,6 +68,7 @@ DEFAULTS = {
             "SMC": False, "SND": False, "EMA": False, "BB": False, "ASIA": False, "AIPB": False
         },
         "ai_liquidity_mode": "block",   # AI plan against a fresh liquidity sweep: block | warn | off
+        "ai_filter_mode": "block",      # AI as a filter: BUY/SELL only on the side of a fresh strategy signal: block | warn | off
         "ai_limit_expiry_min": 45,      # default validity of AI LIMIT/STOP orders (the AI may set 15..ai_limit_max_min)
         "ai_limit_max_min": 120,
         "ai_review_mode": "shadow",     # AI review of positions going the wrong way: off | shadow | live
@@ -75,6 +76,8 @@ DEFAULTS = {
         "ai_review_min_conf": 60,       # live: act only at this confidence or higher
         "ai_review_max": 3,             # reviews per position
         "lane_gate_mode": "block",      # strategy lanes: market-context gate block | warn | off
+        "gate_trend_tfs": ["H1", "H4"], # gate: flag a signal against the EMA50/200 trend on ALL these TFs ([] = off)
+        "gate_block_hours_utc": [0],    # gate: flag signals in these UTC hours (00h = rollover: 0/6 in shadow, exits within minutes)
     },
     "strategy_params": {},              # per-strategy overrides applied from the Optimizer
     "optimizer": {"history": []},       # applied changes (for rollback)

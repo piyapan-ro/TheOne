@@ -178,6 +178,7 @@
           <div style="max-width:110px"><label>ทุก (นาที)</label><input type="number" id="aiInt" min="1"></div>
           <div style="max-width:120px"><label>ความมั่นใจ ≥</label><input type="number" id="aiConf" min="0" max="100"></div>
           <div style="max-width:150px"><label>Liquidity Sweep check</label><select id="aiLiq"><option value="block">บล็อกแผนที่สวน sweep</option><option value="warn">เตือนอย่างเดียว</option><option value="off">ปิด</option></select></div>
+          <div style="max-width:170px"><label>AI เป็นตัวกรองสัญญาณ</label><select id="aiFilter"><option value="block">เข้าเฉพาะฝั่งที่มีสัญญาณกลยุทธ์</option><option value="warn">เตือนอย่างเดียว</option><option value="off">ปิด (AI หาไม้เอง)</option></select></div>
           <div style="max-width:120px"><label>Limit มีผล (นาที, ค่าเริ่มต้น)</label><input type="number" id="aiExp" min="0"></div>
         </div>
         <div class="row" style="align-items:center;flex-wrap:wrap;gap:8px">
@@ -185,6 +186,8 @@
           <div style="max-width:130px"><label>รีวิวเมื่อติดลบ ≥ (R)</label><input type="number" step="0.1" id="aiRevR"></div>
           <div style="max-width:130px"><label>ทำจริงเมื่อมั่นใจ ≥</label><input type="number" id="aiRevConf"></div>
           <div style="max-width:190px"><label>ตัวกรองบริบท (เลนกลยุทธ์)</label><select id="laneGate"><option value="block">บล็อก</option><option value="warn">บันทึกอย่างเดียว</option><option value="off">ปิด</option></select></div>
+          <div style="max-width:150px"><label>ห้ามสวนเทรนด์ (EMA50/200)</label><select id="gateTrend"><option value="H1,H4">H1 + H4 สวนทั้งคู่</option><option value="H1">H1</option><option value="H4">H4</option><option value="">ปิด</option></select></div>
+          <div style="max-width:150px"><label>ชั่วโมงห้ามเข้า (UTC, คั่นด้วย ,)</label><input type="text" id="gateHours" placeholder="เช่น 0,23"></div>
           <div class="actions"><button class="btn sm" id="aiSave">บันทึก</button></div>
         </div>
         <div class="muted" style="font-size:12px" id="aiAutoInfo"></div>

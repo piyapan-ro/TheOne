@@ -81,7 +81,15 @@ EA ไม่เรียก AI ทุกแท่ง จะเรียกเม
 ประมาณการต่อครั้ง: Claude Sonnet 5.5 ≈ 0.01 USD, Claude Haiku 5.5 ≈ 0.0005 USD ถ้าเรียก 2 ครั้งต่อ 1 ออเดอร์ Sonnet จะอยู่ราว 0.02 USD
 ต้นทุนจริงคำนวณจาก token ที่ AI รายงานกลับทุกครั้ง ดูได้ที่ `GET /api/ea/stats` (ต้นทุนต่อครั้ง, ต่อออเดอร์, รายวัน และ log คำตอบ 300 ครั้งล่าสุด)
 
-## 6. ทดสอบใน Strategy Tester
+## 6. สิ่งที่วาดบนกราฟ
+
+- กล่องโซน: Support (เขียว), Resistance (แดง), Bullish OB / Bearish OB (เขียว/แดงเข้ม) พร้อมป้าย id, TF, ชนิด, จำนวนครั้งที่แตะ และสถานะ BROKEN UP/DOWN
+- เส้น M5 BOS (ฟ้า) และ CHOCH (ส้ม) ตรงระดับที่ถูกทะลุ, ป้าย SWEEP ตรงจุด liquidity sweep
+- แผนของ AI ที่รออยู่: กรอบสีทองรอบโซน, เส้นประ entry สีทอง, เส้นจุด invalidation สีแดง
+- แผงสถานะมุมซ้ายบน: สถานะ (AI IDLE / WAIT / NONE / BUY / SELL / OFFLINE), คะแนน BUY/SELL, แผน, โครงสร้าง M5, จำนวนครั้งและค่าใช้จ่าย AI วันนี้ และเหตุผลล่าสุด
+- ปิดได้ด้วย `InpDrawZones` / `InpDrawPanel` สีปรับได้ในกลุ่ม Chart ถอด EA ออกแล้ว object ทั้งหมดถูกลบ
+
+## 7. ทดสอบใน Strategy Tester
 
 Strategy Tester ของ MT5 ไม่อนุญาตให้ใช้ WebRequest EA จึงเรียก AI ตรง ๆ ใน tester ไม่ได้ ตั้ง `InpTesterMode` ได้ 3 แบบ (บนกราฟจริงค่านี้ไม่มีผล EA ใช้ AI เสมอ):
 
@@ -103,7 +111,7 @@ Strategy Tester ของ MT5 ไม่อนุญาตให้ใช้ WebR
 
 ข้อควรระวัง: AI อาจจำราคาทองในอดีตได้จากข้อมูลที่เคยเรียน ผล backtest จึงอาจดีกว่าความจริง ใช้ RULES และการทดสอบบน Demo แบบเดินหน้าจริงประกอบด้วย
 
-## 7. ติดตั้ง
+## 8. ติดตั้ง
 
 1. เปิด Dashboard (`dashboard\start.bat`) และใส่ API Key ในหน้า Settings
 2. MT5 → Tools → Options → Expert Advisors → ติ๊ก *Allow WebRequest for listed URL* แล้วเพิ่ม `http://127.0.0.1:8000`

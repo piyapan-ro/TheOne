@@ -76,6 +76,17 @@ input int             InpRuleMinScore     = 60;              // Rules: min score
 input int             InpRuleMinGap       = 15;              // Rules: min lead over the other side
 input double          InpRuleMaxWaitAtr   = 2.0;             // Rules: retest zone within ATR x of price
 
+input group "=== Chart ==="
+input bool            InpDrawZones        = true;            // Draw zones / structure / entry on the chart
+input bool            InpDrawPanel        = true;            // Draw the status panel (else plain Comment)
+input int             InpZoneExtendBars   = 24;              // Extend zones N bars into the future
+input color           InpClrSupport       = C'0,80,30';      // Support zone
+input color           InpClrResistance    = C'110,20,20';    // Resistance zone
+input color           InpClrBullOB        = C'0,110,60';     // Bullish order block
+input color           InpClrBearOB        = C'140,40,40';    // Bearish order block
+input color           InpClrEntry         = clrGold;         // AI entry level
+input color           InpClrBos           = clrDeepSkyBlue;  // BOS / CHOCH lines
+
 input group "=== Analysis ==="
 input int             InpPivot            = 3;               // Swing pivot strength (bars each side)
 input int             InpSendBars         = 36;              // Closed M5 bars sent to the AI
@@ -121,6 +132,10 @@ struct Structure
    string            sweeps;   // JSON array
    int               sweepAgo; // newest sweep, bars ago (999 = none)
    int               sweepSide;// newest sweep: 1 = buy_side (above a high), -1 = sell_side
+   int               sweepN;   // last sweeps for drawing (newest last)
+   double            sweepLvl[3];
+   int               sweepAgoA[3];
+   int               sweepSideA[3];
    double            lastHigh; double lastLow;
   };
 
@@ -186,6 +201,8 @@ void OnDeinit(const int reason)
   {
    EventKillTimer();
    Comment("");
+   ObjectsDeleteAll(0, OBJ_PREFIX);
+   ChartRedraw();
   }
 
 void OnTimer() { UpdatePanel(); }
@@ -208,6 +225,7 @@ void OnTick()
       g_lastBar = bar;
       ResetDailyCounter();
       if(!Analyze()) { g_status = "NO DATA"; return; }
+      DrawMarket();
      }
    if(g_atr <= 0) return;
 
@@ -310,7 +328,7 @@ void ReadStructure(const MqlRates &r[], const int n, const Swing &sw[], Structur
   {
    int p = MathMax(1, InpPivot);
    s.trend = 0; s.bosDir = 0; s.bosAgo = 999; s.bosLevel = 0; s.chochDir = 0; s.chochAgo = 999; s.chochLevel = 0;
-   s.sweeps = ""; s.sweepAgo = 999; s.sweepSide = 0; s.lastHigh = 0; s.lastLow = 0;
+   s.sweeps = ""; s.sweepAgo = 999; s.sweepSide = 0; s.lastHigh = 0; s.lastLow = 0; s.sweepN = 0;
    double sh = 0, sl = 0; bool shUsed = true, slUsed = true;
    int next = 0, nsw = ArraySize(sw), sweepsN = 0;
    string sweeps[];
@@ -358,7 +376,14 @@ void ReadStructure(const MqlRates &r[], const int n, const Swing &sw[], Structur
      }
    s.lastHigh = sh; s.lastLow = sl;
    int total = ArraySize(sweeps), from = MathMax(0, total - 3);
-   for(int k = from; k < total; k++) s.sweeps += (k > from ? "," : "") + sweeps[k];
+   for(int k = from; k < total; k++)
+     {
+      s.sweeps += (k > from ? "," : "") + sweeps[k];
+      s.sweepLvl[s.sweepN]   = StringToDouble(JsonGet(sweeps[k], "level"));
+      s.sweepAgoA[s.sweepN]  = (int)StringToInteger(JsonGet(sweeps[k], "bars_ago"));
+      s.sweepSideA[s.sweepN] = (JsonGet(sweeps[k], "side") == "buy_side") ? 1 : -1;
+      s.sweepN++;
+     }
    s.sweeps = "[" + s.sweeps + "]";
   }
 
@@ -560,6 +585,7 @@ void AskAI()
    g_plan.note      = note;
    g_status = "AI WAIT";
    g_reason = StringFormat("%s %s @ %s (%s) - waiting for confirmation", decision, g_plan.setup, D(g_plan.entry), g_plan.zoneId);
+   DrawPlan();
    if(InpDebug) PrintFormat("AI PLAN %s  buy=%d sell=%d  %s  %s", g_plan.id, g_lastBuy, g_lastSell, g_reason, note);
    CheckPlan(true);
   }
@@ -815,6 +841,7 @@ void CheckPlan(const bool newBar)
    g_status = dir > 0 ? "AI BUY" : "AI SELL";
    g_reason = StringFormat("opened %s at %s", g_plan.setup, D(px));
    g_plan.active = false;
+   DrawPlan();
   }
 
 //--- most recent closed bar (1..InpSignalMaxAgeBars ago, 0 = last closed) that confirms the plan, or -1
@@ -849,6 +876,7 @@ void DropPlan(const string status, const string why)
    g_plan.active = false;
    g_status = "AI READY";
    g_reason = why;
+   DrawPlan();
   }
 
 //+------------------------------------------------------------------+
@@ -1096,16 +1124,216 @@ double MinStopDistance()
    return lvl * _Point + SpreadPrice() + 2 * _Point;
   }
 
+#define OBJ_PREFIX "AIEA_"
+
+//+------------------------------------------------------------------+
+//| Chart drawing: zones, structure, entry plan, status panel        |
+//+------------------------------------------------------------------+
+datetime BarTimeAgo(const int ago)
+  {
+   int n = ArraySize(g_m5r);
+   int i = n - 1 - MathMax(0, ago);
+   return (i >= 0) ? g_m5r[i].time : g_m5r[0].time;
+  }
+
+datetime FutureTime() { return TimeCurrent() + InpZoneExtendBars * PeriodSeconds(PERIOD_M5); }
+
+void Rect(const string name, const datetime t1, const double p1, const datetime t2, const double p2,
+          const color clr, const bool fill, const int width, const string tip)
+  {
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_RECTANGLE, 0, t1, p1, t2, p2);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);  ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p1);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);  ObjectSetDouble(0, name, OBJPROP_PRICE, 1, p2);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FILL, fill);
+   ObjectSetInteger(0, name, OBJPROP_BACK, fill);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
+  }
+
+void TrendLine(const string name, const datetime t1, const datetime t2, const double p, const color clr,
+               const ENUM_LINE_STYLE style, const int width)
+  {
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_TREND, 0, t1, p, t2, p);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t1);  ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 1, t2);  ObjectSetDouble(0, name, OBJPROP_PRICE, 1, p);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+   ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+  }
+
+void Text(const string name, const datetime t, const double p, const string txt, const color clr,
+          const ENUM_ANCHOR_POINT anchor = ANCHOR_LEFT_LOWER, const int size = 8)
+  {
+   if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_TEXT, 0, t, p);
+   ObjectSetInteger(0, name, OBJPROP_TIME, 0, t);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, 0, p);
+   ObjectSetString(0, name, OBJPROP_TEXT, txt);
+   ObjectSetString(0, name, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, size);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+  }
+
+color ZoneColor(const string kind)
+  {
+   if(kind == "support")    return InpClrSupport;
+   if(kind == "resistance") return InpClrResistance;
+   if(kind == "bull_ob")    return InpClrBullOB;
+   return InpClrBearOB;
+  }
+
+string ZoneTitle(const Zone &z)
+  {
+   string k = (z.kind == "support") ? "Support" : (z.kind == "resistance") ? "Resistance" :
+              (z.kind == "bull_ob") ? "Bullish OB" : "Bearish OB";
+   string extra = (z.touches > 0) ? StringFormat(" %dx", z.touches) : "";
+   if(z.flip != "") extra += (z.flip == "broken_up") ? " BROKEN UP" : " BROKEN DOWN";
+   return StringFormat("%s %s %s%s", z.id, z.tf, k, extra);
+  }
+
+//--- zones, BOS/CHOCH, sweeps: redrawn on every closed M5 bar
+void DrawMarket()
+  {
+   if(!InpDrawZones || (g_tester && !MQLInfoInteger(MQL_VISUAL_MODE))) return;
+   ObjectsDeleteAll(0, OBJ_PREFIX + "Z_");
+   ObjectsDeleteAll(0, OBJ_PREFIX + "S_");
+   datetime fut = FutureTime();
+   for(int i = 0; i < ArraySize(g_zones); i++)
+     {
+      Zone z = g_zones[i];
+      string nm = OBJ_PREFIX + "Z_" + z.id;
+      Rect(nm, BarTimeAgo(z.age), z.lo, fut, z.hi, ZoneColor(z.kind), true, 1, ZoneTitle(z));
+      bool lower = (z.kind == "support" || z.kind == "bull_ob");
+      Text(nm + "_t", fut, lower ? z.lo : z.hi, StringFormat("%s %s", ZoneTitle(z), D(lower ? z.lo : z.hi)),
+           lower ? clrMediumSeaGreen : clrTomato, lower ? ANCHOR_RIGHT_UPPER : ANCHOR_RIGHT_LOWER);
+     }
+   datetime now = TimeCurrent();
+   if(g_m5.bosDir != 0 && g_m5.bosAgo < 200)
+     {
+      TrendLine(OBJ_PREFIX + "S_bos", BarTimeAgo(g_m5.bosAgo + 8), now, g_m5.bosLevel, InpClrBos, STYLE_SOLID, 1);
+      Text(OBJ_PREFIX + "S_bos_t", BarTimeAgo(g_m5.bosAgo + 8), g_m5.bosLevel, g_m5.bosDir > 0 ? "M5 BOS UP" : "M5 BOS DOWN",
+           InpClrBos, g_m5.bosDir > 0 ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER);
+     }
+   if(g_m5.chochDir != 0 && g_m5.chochAgo < 200)
+     {
+      TrendLine(OBJ_PREFIX + "S_choch", BarTimeAgo(g_m5.chochAgo + 8), now, g_m5.chochLevel, clrOrange, STYLE_DASH, 1);
+      Text(OBJ_PREFIX + "S_choch_t", BarTimeAgo(g_m5.chochAgo + 8), g_m5.chochLevel, g_m5.chochDir > 0 ? "M5 CHOCH UP" : "M5 CHOCH DOWN",
+           clrOrange, g_m5.chochDir > 0 ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER);
+     }
+   for(int k = 0; k < g_m5.sweepN; k++)
+     {
+      if(g_m5.sweepAgoA[k] > 200) continue;
+      string nm = OBJ_PREFIX + "S_sw" + IntegerToString(k);
+      Text(nm, BarTimeAgo(g_m5.sweepAgoA[k]), g_m5.sweepLvl[k], g_m5.sweepSideA[k] > 0 ? "SWEEP ▼" : "SWEEP ▲", clrViolet,
+           g_m5.sweepSideA[k] > 0 ? ANCHOR_LOWER : ANCHOR_UPPER);
+     }
+   ChartRedraw();
+  }
+
+//--- the AI plan: entry / invalidation lines and a highlighted zone
+void DrawPlan()
+  {
+   if(!InpDrawZones || (g_tester && !MQLInfoInteger(MQL_VISUAL_MODE))) return;
+   ObjectsDeleteAll(0, OBJ_PREFIX + "P_");
+   if(g_plan.active)
+     {
+      datetime t1 = BarTimeAgo(BarsSince(g_plan.created)), fut = FutureTime();
+      string side = g_plan.dir > 0 ? "BUY" : "SELL";
+      Rect(OBJ_PREFIX + "P_zone", t1, g_plan.zLo, fut, g_plan.zHi, InpClrEntry, false, 2, "AI plan zone " + g_plan.zoneId);
+      TrendLine(OBJ_PREFIX + "P_entry", t1, fut, g_plan.entry, InpClrEntry, STYLE_DASHDOT, 1);
+      Text(OBJ_PREFIX + "P_entry_t", t1, g_plan.entry, StringFormat("AI %s %s @ %s", side, g_plan.setup, D(g_plan.entry)),
+           InpClrEntry, g_plan.dir > 0 ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER, 9);
+      TrendLine(OBJ_PREFIX + "P_inval", t1, fut, g_plan.inval, clrRed, STYLE_DOT, 1);
+      Text(OBJ_PREFIX + "P_inval_t", t1, g_plan.inval, "invalidation " + D(g_plan.inval), clrRed,
+           g_plan.dir > 0 ? ANCHOR_LEFT_UPPER : ANCHOR_LEFT_LOWER);
+     }
+   ChartRedraw();
+  }
+
+//--- status panel (top-left)
+void PanelLabel(const string name, const int x, const int y, const string txt, const color clr, const int size = 9, const bool bold = false)
+  {
+   string nm = OBJ_PREFIX + "L_" + name;
+   if(ObjectFind(0, nm) < 0) ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, nm, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, y);
+   ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+   ObjectSetString(0, nm, OBJPROP_FONT, bold ? "Arial Bold" : "Arial");
+   ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, size);
+   ObjectSetInteger(0, nm, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, nm, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, nm, OBJPROP_HIDDEN, true);
+  }
+
+color StatusColor()
+  {
+   if(g_status == "AI BUY" || g_status == "AI SELL") return clrLime;
+   if(g_status == "AI WAIT")   return clrGold;
+   if(g_status == "AI OFFLINE" || g_status == "AI PAUSED" || g_status == "NO DATA") return clrTomato;
+   if(g_status == "AI NONE")   return clrSilver;
+   return clrDeepSkyBlue;
+  }
+
 void UpdatePanel()
   {
-   if(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE)) return;
-   string plan = g_plan.active
-                 ? StringFormat("Plan: %s %s zone %s [%s-%s] entry %s inval %s, valid %d bars\n%s",
-                                g_plan.dir > 0 ? "BUY" : "SELL", g_plan.setup, g_plan.zoneId, D(g_plan.zLo), D(g_plan.zHi),
-                                D(g_plan.entry), D(g_plan.inval), g_plan.validBars, g_plan.note)
-                 : "Plan: -";
-   Comment(StringFormat("AI EA M5  |  %s\n%s  ATR(M5) %.2f  spread %.2f\nScore  BUY %d  /  SELL %d   (weight of evidence, not win %%)\n%s\nAI calls today: %d   AI cost today: %.4f USD\nM5 structure: %s   zones: %d\n%s",
-                        g_status, _Symbol, g_atr, SpreadPrice(), g_lastBuy, g_lastSell, plan,
-                        g_callsToday, g_costToday, TrendName(g_m5.trend), ArraySize(g_zones), g_reason));
+   if(g_tester && !MQLInfoInteger(MQL_VISUAL_MODE)) return;
+   string planTxt = g_plan.active
+                    ? StringFormat("%s %s @ %s  zone %s [%s-%s]  valid %d bars", g_plan.dir > 0 ? "BUY" : "SELL", g_plan.setup,
+                                   D(g_plan.entry), g_plan.zoneId, D(g_plan.zLo), D(g_plan.zHi), g_plan.validBars)
+                    : "-";
+   if(!InpDrawPanel)
+     {
+      Comment(StringFormat("AI EA M5  |  %s\n%s  ATR(M5) %.2f  spread %.2f\nScore  BUY %d  /  SELL %d   (weight of evidence, not win %%)\nPlan: %s\n%s\nAI calls today: %d   AI cost today: %.4f USD\nM5 structure: %s   zones: %d\n%s",
+                           g_status, _Symbol, g_atr, SpreadPrice(), g_lastBuy, g_lastSell, planTxt, g_plan.note,
+                           g_callsToday, g_costToday, TrendName(g_m5.trend), ArraySize(g_zones), g_reason));
+      return;
+     }
+   string bg = OBJ_PREFIX + "L_bg";
+   if(ObjectFind(0, bg) < 0)
+     {
+      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 8);
+      ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 18);
+      ObjectSetInteger(0, bg, OBJPROP_XSIZE, 400);
+      ObjectSetInteger(0, bg, OBJPROP_YSIZE, 190);
+      ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'18,24,38');
+      ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+      ObjectSetInteger(0, bg, OBJPROP_COLOR, C'60,80,110');
+      ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+      ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
+     }
+   int x = 18, y = 24, dy = 18;
+   long pos = CountPositions();
+   PanelLabel("title", x, y, "AI EA M5", clrWhite, 12, true);
+   PanelLabel("mode", x + 110, y + 2, g_tester ? "TESTER" : "MARKET", clrSilver, 9);
+   PanelLabel("status", x + 190, y + 2, "● " + g_status, StatusColor(), 10, true);
+   y += dy + 8;
+   PanelLabel("sym", x, y, StringFormat("%s  M5   ATR %.2f   Spread %.2f", _Symbol, g_atr, SpreadPrice()), clrSilver);
+   y += dy;
+   PanelLabel("score", x, y, StringFormat("AI score   BUY %d   /   SELL %d", g_lastBuy, g_lastSell),
+              g_lastBuy > g_lastSell ? clrMediumSeaGreen : (g_lastSell > g_lastBuy ? clrTomato : clrSilver), 10, true);
+   y += dy;
+   PanelLabel("plan", x, y, "Plan: " + planTxt, g_plan.active ? InpClrEntry : clrGray);
+   y += dy;
+   PanelLabel("note", x, y, StringSubstr(g_plan.note, 0, 60), clrLightSteelBlue);
+   y += dy;
+   PanelLabel("struct", x, y, StringFormat("M5 structure %s   zones %d   position %d   P/L %.2f", TrendName(g_m5.trend),
+              ArraySize(g_zones), pos, GetFloatingPL()), clrSilver);
+   y += dy;
+   PanelLabel("cost", x, y, StringFormat("AI calls today %d   cost %.4f USD", g_callsToday, g_costToday), clrSilver);
+   y += dy;
+   PanelLabel("reason", x, y, StringSubstr(g_reason, 0, 64), StatusColor());
+   ChartRedraw();
   }
 //+------------------------------------------------------------------+

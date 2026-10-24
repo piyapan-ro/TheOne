@@ -81,13 +81,26 @@ EA ไม่เรียก AI ทุกแท่ง จะเรียกเม
 ประมาณการต่อครั้ง: Claude Sonnet 5.5 ≈ 0.01 USD, Claude Haiku 5.5 ≈ 0.0005 USD ถ้าเรียก 2 ครั้งต่อ 1 ออเดอร์ Sonnet จะอยู่ราว 0.02 USD
 ต้นทุนจริงคำนวณจาก token ที่ AI รายงานกลับทุกครั้ง ดูได้ที่ `GET /api/ea/stats` (ต้นทุนต่อครั้ง, ต่อออเดอร์, รายวัน และ log คำตอบ 300 ครั้งล่าสุด)
 
-## 6. สิ่งที่วาดบนกราฟ
+## 6. สิ่งที่วาดบนกราฟ (ครบตามแบบข้อ 1–5)
 
-- กล่องโซน: Support (เขียว), Resistance (แดง), Bullish OB / Bearish OB (เขียว/แดงเข้ม) พร้อมป้าย id, TF, ชนิด, จำนวนครั้งที่แตะ และสถานะ BROKEN UP/DOWN
-- เส้น M5 BOS (ฟ้า) และ CHOCH (ส้ม) ตรงระดับที่ถูกทะลุ, ป้าย SWEEP ตรงจุด liquidity sweep
-- แผนของ AI ที่รออยู่: กรอบสีทองรอบโซน, เส้นประ entry สีทอง, เส้นจุด invalidation สีแดง
-- แผงสถานะมุมซ้ายบน: สถานะ (AI IDLE / WAIT / NONE / BUY / SELL / OFFLINE), คะแนน BUY/SELL, แผน, โครงสร้าง M5, จำนวนครั้งและค่าใช้จ่าย AI วันนี้ และเหตุผลล่าสุด
-- ปิดได้ด้วย `InpDrawZones` / `InpDrawPanel` สีปรับได้ในกลุ่ม Chart ถอด EA ออกแล้ว object ทั้งหมดถูกลบ
+**บนกราฟ**
+- กล่องโซน: Support (เขียว) / Resistance (แดง) / Bullish OB / Bearish OB ของ M5 และ H1 พร้อมป้าย id, TF, ชนิด, จำนวนครั้งที่แตะ, BROKEN UP/DOWN
+- โครงสร้าง M5: เส้น BOS (ฟ้า), CHOCH (ส้ม), ป้าย SWEEP ตรงจุดกวาด liquidity, เส้น swing high/low ล่าสุด (= liquidity ฝั่ง buy/sell)
+- บริบท H1/H4: เส้น H1 swing high/low, H1 EMA50, H4 EMA50/EMA200 (เฉพาะที่อยู่ใกล้ราคา)
+- แผนของ AI ที่รออยู่: กรอบทองรอบโซนที่เลือก, เส้น entry (ทอง), เส้น invalidation (แดง) และป้าย "farther - not chosen" ที่โซนฝั่งเดียวกันซึ่งไกลกว่า (ผลการเปรียบเทียบ retest)
+- จุดที่ EA เปิดออเดอร์ตามแผน AI: ป้าย ^BUY / vSELL พร้อม setup และคะแนน
+
+**แผงสถานะมุมซ้ายบน**
+| ส่วน | แสดง |
+|---|---|
+| หัว | สถานะ AI READY / IDLE / WAIT / NONE / BUY / SELL / OFFLINE / PAUSED, symbol, ATR, spread, เวลา server |
+| CONTEXT | H4 และ H1: เทรนด์ EMA, โครงสร้าง, BOS/CHOCH ล่าสุด · M5: โครงสร้าง, เหตุการณ์ล่าสุด, sweep, จำนวนโซน |
+| AI | เวลาและรุ่นที่ตอบ, คะแนน BUY และ SELL แยกกัน พร้อม setup / โซน / เหตุผลของแต่ละฝั่ง, แผนที่เลือก (ฝั่ง setup entry โซน invalidation อายุ) และ note |
+| CONFIRMATION | เช็กลิสต์ 4 ข้อก่อนส่ง Market order: แท่ง M5 ที่ปิดแล้วยืนยัน / ระยะห่างจากจุดเข้า / setup ยังถูกต้อง / สัญญาณยังสด แต่ละข้อแสดง [v]/[x] และรายละเอียด |
+| RISK | ออเดอร์ถัดไป: lot (จาก risk %), SL (กี่ ATR), TP, R:R, จุด breakeven/trailing · ไม้ที่เปิดอยู่: ราคาเข้า SL TP กำไรเป็น R และสถานะ BE/trailing |
+| AI CALLS & COST | จำนวนครั้ง/วัน, ค่าใช้จ่ายวันนี้, งบของ Dashboard, เหตุผลที่กำลังเรียก/ไม่เรียก AI และข้อความ AI OFFLINE พร้อมเวลาที่จะลองใหม่ |
+
+ปิดได้ด้วย `InpDrawZones` / `InpDrawPanel` สีปรับได้ในกลุ่ม Chart ถอด EA ออกแล้ว object ทั้งหมดถูกลบ
 
 ## 7. ทดสอบใน Strategy Tester
 

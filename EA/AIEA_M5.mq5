@@ -169,6 +169,12 @@ int       g_callsToday = 0;
 int       g_callsDay = -1;
 double    g_costToday = 0.0;
 int       g_lastBuy = 0, g_lastSell = 0;
+string    g_aiTime = "", g_aiModel = "";                 // last AI answer
+string    g_sideSetup[2], g_sideZone[2], g_sideReason[2]; // [0]=BUY [1]=SELL
+double    g_budget = 0.0, g_spent = 0.0;                 // Dashboard daily budget / spent (USD)
+bool      g_chk[4]; string g_chkTxt[4];                  // confirmation checklist of the active plan
+double    g_pvSl = 0, g_pvTp = 0, g_pvLot = 0, g_pvSlAtr = 0; // risk preview for the active plan
+string    g_gate = "";                                   // why the AI is / is not called right now
 Zone      g_zones[];
 Structure g_m5;
 bool      g_tester = false;
@@ -513,6 +519,13 @@ string TfContext(const MqlRates &r[], const int n, const double atr)
 //+------------------------------------------------------------------+
 bool WantAI()
   {
+   bool ok = WantAI_();
+   g_gate = ok ? "calling the AI on this bar" : g_reason;
+   return ok;
+  }
+
+bool WantAI_()
+  {
    int n = ArraySize(g_m5r);
    if(n == 0) return false;
    if(InpMaxSpreadPrice > 0 && SpreadPrice() > InpMaxSpreadPrice)
@@ -561,6 +574,11 @@ void AskAI()
    g_costToday += StringToDouble(JsonGet(resp, "cost_usd"));
    g_lastBuy  = (int)StringToInteger(JsonGet(resp, "buy_score"));
    g_lastSell = (int)StringToInteger(JsonGet(resp, "sell_score"));
+   g_sideSetup[0] = JsonGet(resp, "buy_setup");  g_sideZone[0] = JsonGet(resp, "buy_zone");  g_sideReason[0] = JsonGet(resp, "buy_reason");
+   g_sideSetup[1] = JsonGet(resp, "sell_setup"); g_sideZone[1] = JsonGet(resp, "sell_zone"); g_sideReason[1] = JsonGet(resp, "sell_reason");
+   g_aiTime  = TimeToString(TimeCurrent(), TIME_MINUTES);
+   g_aiModel = JsonGet(resp, "model");
+   if(JsonGet(resp, "budget") != "") { g_budget = StringToDouble(JsonGet(resp, "budget")); g_spent = StringToDouble(JsonGet(resp, "spent_today")); }
    string decision = JsonGet(resp, "decision");
    string note = JsonGet(resp, "note"), reject = JsonGet(resp, "reject");
    if(decision != "BUY" && decision != "SELL")
@@ -637,7 +655,8 @@ string NoneAnswer(const int buy, const int sell, const string why)
   {
    return StringFormat("{\"ok\":true,\"plan_id\":\"T%s\",\"cost_usd\":0,\"decision\":\"NONE\",\"buy_score\":%d,\"sell_score\":%d,"
                        "\"setup\":\"none\",\"zone_id\":\"\",\"entry\":0,\"invalidation\":0,\"zone_low\":0,\"zone_high\":0,"
-                       "\"valid_bars\":0,\"note\":\"\",\"reject\":\"%s\"}", BarKey(), buy, sell, JsonEscape(why));
+                       "\"valid_bars\":0,\"note\":\"\",\"reject\":\"%s\",\"buy_setup\":\"\",\"buy_zone\":\"\",\"buy_reason\":\"rules\","
+                       "\"sell_setup\":\"\",\"sell_zone\":\"\",\"sell_reason\":\"rules\",\"model\":\"rules\"}", BarKey(), buy, sell, JsonEscape(why));
   }
 
 //--- pick the entry zone of one side the way ea_ai.finalize() does; returns setup or "" with the zone index
@@ -731,9 +750,11 @@ string RulesDecide()
    int valid = (setup == "breakout") ? 2 : 8;
    return StringFormat("{\"ok\":true,\"plan_id\":\"T%s\",\"cost_usd\":0,\"decision\":\"%s\",\"buy_score\":%d,\"sell_score\":%d,"
                        "\"setup\":\"%s\",\"zone_id\":\"%s\",\"entry\":%s,\"invalidation\":%s,\"zone_low\":%s,\"zone_high\":%s,"
-                       "\"valid_bars\":%d,\"note\":\"rules\",\"reject\":\"\"}",
+                       "\"valid_bars\":%d,\"note\":\"rules\",\"reject\":\"\",\"buy_setup\":\"%s\",\"buy_zone\":\"%s\",\"buy_reason\":\"rules\","
+                       "\"sell_setup\":\"%s\",\"sell_zone\":\"%s\",\"sell_reason\":\"rules\",\"model\":\"rules\"}",
                        BarKey(), dir > 0 ? "BUY" : "SELL", buy, sell, setup, z.id,
-                       D(dir > 0 ? z.hi : z.lo), D(dir > 0 ? z.lo : z.hi), D(z.lo), D(z.hi), valid);
+                       D(dir > 0 ? z.hi : z.lo), D(dir > 0 ? z.lo : z.hi), D(z.lo), D(z.hi), valid,
+                       sb == "" ? "none" : sb, zb >= 0 ? g_zones[zb].id : "", ss == "" ? "none" : ss, zs >= 0 ? g_zones[zs].id : "");
   }
 
 string ExportRequest()
@@ -781,52 +802,59 @@ void CheckPlan(const bool newBar)
    int n = ArraySize(g_m5r);
    if(n < 2) return;
    int dir = g_plan.dir;
+   string side = dir > 0 ? "BUY" : "SELL";
+   int used = BarsSince(g_plan.created);
    if(newBar)
      {
-      if(BarsSince(g_plan.created) > g_plan.validBars) { DropPlan("expired", "plan expired (signal no longer fresh)"); return; }
+      if(used > g_plan.validBars) { DropPlan("expired", "plan expired (signal no longer fresh)"); return; }
       double c = g_m5r[n - 1].close;
       if((dir > 0 && c < g_plan.inval) || (dir < 0 && c > g_plan.inval))
         { DropPlan("cancelled", "setup invalid: closed beyond the zone"); return; }
      }
-
-   //--- 1) a closed M5 bar confirms the setup, 2) it is fresh
-   int ago = ConfirmBarAgo();
-   if(ago < 0)
-     {
-      g_status = "AI WAIT";
-      g_reason = StringFormat("%s %s %s: waiting for a closed M5 confirmation bar", dir > 0 ? "BUY" : "SELL", g_plan.setup, g_plan.zoneId);
-      return;
-     }
-
-   //--- 3) distance from the entry
    MqlTick t;
    if(!SymbolInfoTick(_Symbol, t)) return;
    double px = dir > 0 ? t.ask : t.bid;
-   double dist = MathAbs(px - g_plan.entry);
-   if(dist > InpMaxEntryDistAtr * g_atr)
+
+   //--- 1) a closed M5 bar confirms the setup
+   int ago = ConfirmBarAgo();
+   g_chk[0] = (ago >= 0);
+   g_chkTxt[0] = g_chk[0] ? StringFormat("closed M5 bar confirms %s (%d bars ago)", g_plan.setup, ago)
+                          : StringFormat("waiting for a closed M5 bar that confirms %s at %s", g_plan.setup, g_plan.zoneId);
+   //--- 2) distance from the entry
+   double dist = MathAbs(px - g_plan.entry), maxDist = InpMaxEntryDistAtr * g_atr;
+   g_chk[1] = (dist <= maxDist);
+   g_chkTxt[1] = StringFormat("price %s is %.2f from entry %s (max %.2f)%s", D(px), dist, D(g_plan.entry), maxDist, g_chk[1] ? "" : " - not chasing");
+   //--- 3) setup still valid: price not beyond the invalidation, spread and SL width acceptable
+   double sl = dir > 0 ? g_plan.inval - InpSlBufferAtr * g_atr : g_plan.inval + InpSlBufferAtr * g_atr;
+   double slDist = MathMax(MathAbs(px - sl), MathMax(InpMinSlAtr * g_atr, MinStopDistance()));
+   bool beyond = (dir > 0 && t.bid <= g_plan.inval) || (dir < 0 && t.ask >= g_plan.inval);
+   bool spreadOk = !(InpMaxSpreadPrice > 0 && SpreadPrice() > InpMaxSpreadPrice);
+   bool slOk = (slDist <= InpMaxSlAtr * g_atr);
+   g_chk[2] = (!beyond && spreadOk && slOk);
+   g_chkTxt[2] = beyond ? "price is beyond the invalidation level" :
+                 (!spreadOk ? StringFormat("spread %.2f > %.2f", SpreadPrice(), InpMaxSpreadPrice) :
+                 (!slOk ? StringFormat("SL %.2f wider than %.1f ATR", slDist, InpMaxSlAtr) :
+                  StringFormat("zone %s intact, spread %.2f ok", g_plan.zoneId, SpreadPrice())));
+   //--- 4) freshness of the signal
+   g_chk[3] = (used <= g_plan.validBars) && (ago < 0 || ago < InpSignalMaxAgeBars);
+   g_chkTxt[3] = StringFormat("plan age %d/%d bars%s", used, g_plan.validBars, (ago >= InpSignalMaxAgeBars && ago >= 0) ? ", confirmation bar too old" : "");
+
+   //--- risk preview (what the order would be right now)
+   g_pvSlAtr = slDist / g_atr;
+   g_pvSl  = NormalizeDouble(dir > 0 ? px - slDist : px + slDist, _Digits);
+   g_pvTp  = NormalizeDouble(dir > 0 ? px + slDist * InpRR : px - slDist * InpRR, _Digits);
+   g_pvLot = CalcLot(dir, px, slDist);
+
+   if(!(g_chk[0] && g_chk[1] && g_chk[2] && g_chk[3]))
      {
       g_status = "AI WAIT";
-      g_reason = StringFormat("price %.2f is %.2f from entry %s (max %.2f) - not chasing", px, dist, D(g_plan.entry), InpMaxEntryDistAtr * g_atr);
+      for(int k = 0; k < 4; k++) if(!g_chk[k]) { g_reason = side + " " + g_plan.setup + ": " + g_chkTxt[k]; break; }
       return;
      }
-   if((dir > 0 && t.bid <= g_plan.inval) || (dir < 0 && t.ask >= g_plan.inval))
-     { g_status = "AI WAIT"; g_reason = "price is beyond the invalidation level"; return; }
-   if(InpMaxSpreadPrice > 0 && SpreadPrice() > InpMaxSpreadPrice)
-     { g_status = "AI WAIT"; g_reason = StringFormat("Spread %.2f > %.2f", SpreadPrice(), InpMaxSpreadPrice); return; }
-
-   //--- 4) SL / TP / lot
-   double sl = dir > 0 ? g_plan.inval - InpSlBufferAtr * g_atr : g_plan.inval + InpSlBufferAtr * g_atr;
-   double slDist = MathAbs(px - sl);
-   slDist = MathMax(slDist, MathMax(InpMinSlAtr * g_atr, MinStopDistance()));
-   if(slDist > InpMaxSlAtr * g_atr)
-     { g_status = "AI WAIT"; g_reason = StringFormat("SL %.2f wider than %.1f ATR", slDist, InpMaxSlAtr); return; }
-   sl = NormalizeDouble(dir > 0 ? px - slDist : px + slDist, _Digits);
-   double tp = NormalizeDouble(dir > 0 ? px + slDist * InpRR : px - slDist * InpRR, _Digits);
-   double lot = CalcLot(dir, px, slDist);
-   if(lot <= 0) { DropPlan("cancelled", "lot is zero (risk too small for min lot, or no margin)"); return; }
+   if(g_pvLot <= 0) { DropPlan("cancelled", "lot is zero (risk too small for min lot, or no margin)"); return; }
 
    string cmt = StringFormat("%s %s %d/%d", InpComment, g_plan.setup, g_plan.buyScore, g_plan.sellScore);
-   bool ok = dir > 0 ? trade.Buy(lot, _Symbol, px, sl, tp, cmt) : trade.Sell(lot, _Symbol, px, sl, tp, cmt);
+   bool ok = dir > 0 ? trade.Buy(g_pvLot, _Symbol, px, g_pvSl, g_pvTp, cmt) : trade.Sell(g_pvLot, _Symbol, px, g_pvSl, g_pvTp, cmt);
    uint rc = trade.ResultRetcode();
    if(!ok || (rc != TRADE_RETCODE_DONE && rc != TRADE_RETCODE_PLACED))
      {
@@ -834,12 +862,13 @@ void CheckPlan(const bool newBar)
       Print(g_reason);
       return;   // plan stays; next tick re-checks every condition
      }
-   PrintFormat("AI %s %.2f lots @ %s SL %s TP %s  plan %s (%s %s)", dir > 0 ? "BUY" : "SELL", lot, D(px), D(sl), D(tp),
+   PrintFormat("AI %s %.2f lots @ %s SL %s TP %s  plan %s (%s %s)", side, g_pvLot, D(px), D(g_pvSl), D(g_pvTp),
                g_plan.id, g_plan.setup, g_plan.zoneId);
    string resp;
    if(!g_tester)
    PostJson("/api/ea/report", StringFormat("{\"plan_id\":\"%s\",\"status\":\"opened\",\"ticket\":%I64u,\"price\":%s,\"lot\":%.2f}",
-                                           g_plan.id, trade.ResultOrder(), D(px), lot), 5000, resp);
+                                           g_plan.id, trade.ResultOrder(), D(px), g_pvLot), 5000, resp);
+   DrawTradeMarker(side, px);
    g_status = dir > 0 ? "AI BUY" : "AI SELL";
    g_reason = StringFormat("opened %s at %s", g_plan.setup, D(px));
    g_plan.active = false;
@@ -1064,6 +1093,17 @@ string JsonGet(const string js, const string key)
       return out;
      }
    int e = p;
+   if(StringGetCharacter(js, p) == '{' || StringGetCharacter(js, p) == '[')   // nested object / array: return it whole
+     {
+      int depth = 0;
+      for(; e < len; e++)
+        {
+         ushort ch = StringGetCharacter(js, e);
+         if(ch == '{' || ch == '[') depth++;
+         if(ch == '}' || ch == ']') { depth--; if(depth == 0) { e++; break; } }
+        }
+      return StringSubstr(js, p, e - p);
+     }
    while(e < len)
      {
       ushort ch = StringGetCharacter(js, e);
@@ -1228,14 +1268,45 @@ void DrawMarket()
       Text(OBJ_PREFIX + "S_choch_t", BarTimeAgo(g_m5.chochAgo + 8), g_m5.chochLevel, g_m5.chochDir > 0 ? "M5 CHOCH UP" : "M5 CHOCH DOWN",
            clrOrange, g_m5.chochDir > 0 ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER);
      }
+   // M5 swings = liquidity, H1 swings and H4 EMA50/200 = higher-timeframe context
+   datetime from = BarTimeAgo(60);
+   if(g_m5.lastHigh > 0) { TrendLine(OBJ_PREFIX + "S_m5h", from, fut, g_m5.lastHigh, clrSlateGray, STYLE_DOT, 1);
+                           Text(OBJ_PREFIX + "S_m5h_t", fut, g_m5.lastHigh, "M5 swing high (buy-side liq.) " + D(g_m5.lastHigh), clrSlateGray, ANCHOR_RIGHT_LOWER, 7); }
+   if(g_m5.lastLow > 0)  { TrendLine(OBJ_PREFIX + "S_m5l", from, fut, g_m5.lastLow, clrSlateGray, STYLE_DOT, 1);
+                           Text(OBJ_PREFIX + "S_m5l_t", fut, g_m5.lastLow, "M5 swing low (sell-side liq.) " + D(g_m5.lastLow), clrSlateGray, ANCHOR_RIGHT_UPPER, 7); }
+   CtxLine("h1h", JsonGet(g_h1ctx, "swing_high"), "H1 swing high", clrSteelBlue, ANCHOR_RIGHT_LOWER, from, fut);
+   CtxLine("h1l", JsonGet(g_h1ctx, "swing_low"),  "H1 swing low",  clrSteelBlue, ANCHOR_RIGHT_UPPER, from, fut);
+   CtxLine("h4e50",  JsonGet(g_h4ctx, "ema50"),  "H4 EMA50",  clrMediumPurple, ANCHOR_RIGHT_LOWER, from, fut);
+   CtxLine("h4e200", JsonGet(g_h4ctx, "ema200"), "H4 EMA200", clrMediumPurple, ANCHOR_RIGHT_LOWER, from, fut);
+   CtxLine("h1e50",  JsonGet(g_h1ctx, "ema50"),  "H1 EMA50",  clrCadetBlue, ANCHOR_RIGHT_LOWER, from, fut);
    for(int k = 0; k < g_m5.sweepN; k++)
      {
       if(g_m5.sweepAgoA[k] > 200) continue;
       string nm = OBJ_PREFIX + "S_sw" + IntegerToString(k);
-      Text(nm, BarTimeAgo(g_m5.sweepAgoA[k]), g_m5.sweepLvl[k], g_m5.sweepSideA[k] > 0 ? "SWEEP ▼" : "SWEEP ▲", clrViolet,
+      Text(nm, BarTimeAgo(g_m5.sweepAgoA[k]), g_m5.sweepLvl[k], g_m5.sweepSideA[k] > 0 ? "SWEEP (above high)" : "SWEEP (below low)", clrViolet,
            g_m5.sweepSideA[k] > 0 ? ANCHOR_LOWER : ANCHOR_UPPER);
      }
    ChartRedraw();
+  }
+
+void CtxLine(const string key, const string value, const string title, const color clr, const ENUM_ANCHOR_POINT anchor,
+             const datetime from, const datetime fut)
+  {
+   double p = StringToDouble(value);
+   if(p <= 0 || g_atr <= 0) return;
+   int n = ArraySize(g_m5r);
+   if(MathAbs(p - g_m5r[n - 1].close) > 12 * g_atr) return;   // far away: would only stretch the chart
+   TrendLine(OBJ_PREFIX + "S_" + key, from, fut, p, clr, STYLE_DASHDOTDOT, 1);
+   Text(OBJ_PREFIX + "S_" + key + "_t", fut, p, title + " " + D(p), clr, anchor, 7);
+  }
+
+//--- marker where an AI trade was opened (kept until the EA is removed)
+void DrawTradeMarker(const string side, const double px)
+  {
+   if(!InpDrawZones || (g_tester && !MQLInfoInteger(MQL_VISUAL_MODE))) return;
+   string nm = OBJ_PREFIX + "T_" + IntegerToString((int)TimeCurrent());
+   Text(nm, TimeCurrent(), px, StringFormat("%s %s %s  %d/%d", side == "BUY" ? "^" : "v", side, g_plan.setup, g_plan.buyScore, g_plan.sellScore),
+        side == "BUY" ? clrLime : clrOrangeRed, side == "BUY" ? ANCHOR_UPPER : ANCHOR_LOWER, 9);
   }
 
 //--- the AI plan: entry / invalidation lines and a highlighted zone
@@ -1254,6 +1325,11 @@ void DrawPlan()
       TrendLine(OBJ_PREFIX + "P_inval", t1, fut, g_plan.inval, clrRed, STYLE_DOT, 1);
       Text(OBJ_PREFIX + "P_inval_t", t1, g_plan.inval, "invalidation " + D(g_plan.inval), clrRed,
            g_plan.dir > 0 ? ANCHOR_LEFT_UPPER : ANCHOR_LEFT_LOWER);
+      // retest comparison: other zones of the same side that were farther from price
+      for(int i = 0; i < ArraySize(g_zones); i++)
+         if(g_zones[i].id != g_plan.zoneId && ZoneSideOk(g_plan.dir, g_zones[i]))
+            Text(OBJ_PREFIX + "P_skip" + IntegerToString(i), t1, g_plan.dir > 0 ? g_zones[i].hi : g_zones[i].lo,
+                 g_zones[i].id + " farther - not chosen", clrGray, g_plan.dir > 0 ? ANCHOR_LEFT_LOWER : ANCHOR_LEFT_UPPER, 7);
      }
    ChartRedraw();
   }
@@ -1283,20 +1359,63 @@ color StatusColor()
    return clrDeepSkyBlue;
   }
 
+string TfLine(const string ctx)
+  {
+   string bos = JsonGet(ctx, "last_bos"), ch = JsonGet(ctx, "last_choch");
+   string ev = "";
+   if(ch != "" && ch != "null") ev = StringFormat("CHOCH %s %s bars ago", JsonGet(ch, "dir"), JsonGet(ch, "bars_ago"));
+   if(bos != "" && bos != "null")
+     {
+      string b = StringFormat("BOS %s %s bars ago", JsonGet(bos, "dir"), JsonGet(bos, "bars_ago"));
+      ev = (ev == "" || StringToInteger(JsonGet(bos, "bars_ago")) < StringToInteger(JsonGet(ch, "bars_ago"))) ? b : ev;
+     }
+   return StringFormat("EMA %s | structure %s | %s", JsonGet(ctx, "ema_trend"), JsonGet(ctx, "structure"), ev == "" ? "no event" : ev);
+  }
+
+string M5Line()
+  {
+   string ev = "";
+   if(g_m5.chochDir != 0 && g_m5.chochAgo <= g_m5.bosAgo) ev = StringFormat("CHOCH %s %d bars ago", g_m5.chochDir > 0 ? "up" : "down", g_m5.chochAgo);
+   else if(g_m5.bosDir != 0) ev = StringFormat("BOS %s %d bars ago", g_m5.bosDir > 0 ? "up" : "down", g_m5.bosAgo);
+   string sw = g_m5.sweepAgo < 999 ? StringFormat(" | sweep %s %d bars ago", g_m5.sweepSide > 0 ? "buy-side" : "sell-side", g_m5.sweepAgo) : "";
+   return StringFormat("structure %s | %s%s", TrendName(g_m5.trend), ev == "" ? "no event" : ev, sw);
+  }
+
+string PositionLine()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !IsMine()) continue;
+      bool buy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN), sl = PositionGetDouble(POSITION_SL), tp = PositionGetDouble(POSITION_TP);
+      double R = (tp > 0 && InpRR > 0) ? MathAbs(tp - open) / InpRR : g_atr;
+      double profit = buy ? SymbolInfoDouble(_Symbol, SYMBOL_BID) - open : open - SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double r = R > 0 ? profit / R : 0;
+      string be = !InpUseBreakeven ? "BE off" : (r >= InpBeTriggerR ? "BE done" : StringFormat("BE at %.1fR", InpBeTriggerR));
+      string tr = !InpUseTrailing ? "trail off" : (r >= InpTrailStartR ? StringFormat("trailing %.1f ATR", InpTrailDistAtr) : StringFormat("trail at %.1fR", InpTrailStartR));
+      return StringFormat("%s %.2f @ %s  SL %s  TP %s  %+.2fR  %s | %s  P/L %.2f", buy ? "BUY" : "SELL",
+                          PositionGetDouble(POSITION_VOLUME), D(open), D(sl), D(tp), r, be, tr, PositionGetDouble(POSITION_PROFIT));
+     }
+   return "none (1 position max)";
+  }
+
 void UpdatePanel()
   {
    if(g_tester && !MQLInfoInteger(MQL_VISUAL_MODE)) return;
    string planTxt = g_plan.active
-                    ? StringFormat("%s %s @ %s  zone %s [%s-%s]  valid %d bars", g_plan.dir > 0 ? "BUY" : "SELL", g_plan.setup,
-                                   D(g_plan.entry), g_plan.zoneId, D(g_plan.zLo), D(g_plan.zHi), g_plan.validBars)
-                    : "-";
+                    ? StringFormat("%s %s @ %s  zone %s [%s-%s]  inval %s  valid %d bars", g_plan.dir > 0 ? "BUY" : "SELL", g_plan.setup,
+                                   D(g_plan.entry), g_plan.zoneId, D(g_plan.zLo), D(g_plan.zHi), D(g_plan.inval), g_plan.validBars)
+                    : "none - " + (g_status == "AI NONE" ? "AI chose NONE, waiting" : "waiting for the next AI call");
    if(!InpDrawPanel)
      {
-      Comment(StringFormat("AI EA M5  |  %s\n%s  ATR(M5) %.2f  spread %.2f\nScore  BUY %d  /  SELL %d   (weight of evidence, not win %%)\nPlan: %s\n%s\nAI calls today: %d   AI cost today: %.4f USD\nM5 structure: %s   zones: %d\n%s",
-                           g_status, _Symbol, g_atr, SpreadPrice(), g_lastBuy, g_lastSell, planTxt, g_plan.note,
-                           g_callsToday, g_costToday, TrendName(g_m5.trend), ArraySize(g_zones), g_reason));
+      Comment(StringFormat("AI EA M5  |  %s\n%s  ATR(M5) %.2f  spread %.2f\nH4: %s\nH1: %s\nM5: %s\nAI %s  BUY %d %s %s | SELL %d %s %s\nPlan: %s\n%s\nPosition: %s\nAI calls today: %d   cost today: %.4f USD\n%s",
+                           g_status, _Symbol, g_atr, SpreadPrice(), TfLine(g_h4ctx), TfLine(g_h1ctx), M5Line(), g_aiTime,
+                           g_lastBuy, g_sideSetup[0], g_sideZone[0], g_lastSell, g_sideSetup[1], g_sideZone[1], planTxt, g_plan.note,
+                           PositionLine(), g_callsToday, g_costToday, g_reason));
       return;
      }
+   int x = 18, y = 24, dy = 17, W = 520;
    string bg = OBJ_PREFIX + "L_bg";
    if(ObjectFind(0, bg) < 0)
      {
@@ -1304,8 +1423,7 @@ void UpdatePanel()
       ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
       ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 8);
       ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 18);
-      ObjectSetInteger(0, bg, OBJPROP_XSIZE, 400);
-      ObjectSetInteger(0, bg, OBJPROP_YSIZE, 190);
+      ObjectSetInteger(0, bg, OBJPROP_XSIZE, W);
       ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'18,24,38');
       ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
       ObjectSetInteger(0, bg, OBJPROP_COLOR, C'60,80,110');
@@ -1313,27 +1431,59 @@ void UpdatePanel()
       ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, bg, OBJPROP_HIDDEN, true);
      }
-   int x = 18, y = 24, dy = 18;
-   long pos = CountPositions();
+   color dim = C'150,160,180', head = C'120,170,255';
+   // title
    PanelLabel("title", x, y, "AI EA M5", clrWhite, 12, true);
    PanelLabel("mode", x + 110, y + 2, g_tester ? "TESTER" : "MARKET", clrSilver, 9);
-   PanelLabel("status", x + 190, y + 2, "● " + g_status, StatusColor(), 10, true);
-   y += dy + 8;
-   PanelLabel("sym", x, y, StringFormat("%s  M5   ATR %.2f   Spread %.2f", _Symbol, g_atr, SpreadPrice()), clrSilver);
+   PanelLabel("status", x + 190, y + 2, "* " + g_status, StatusColor(), 10, true);
+   y += dy + 6;
+   PanelLabel("sym", x, y, StringFormat("%s M5   ATR %.2f   spread %.2f   server %s", _Symbol, g_atr, SpreadPrice(), TimeToString(TimeCurrent(), TIME_MINUTES)), dim);
+   y += dy + 4;
+   // context
+   PanelLabel("h_ctx", x, y, "CONTEXT", head, 8, true); y += dy - 3;
+   PanelLabel("h4", x, y, "H4  " + TfLine(g_h4ctx), clrSilver); y += dy;
+   PanelLabel("h1", x, y, "H1  " + TfLine(g_h1ctx), clrSilver); y += dy;
+   PanelLabel("m5", x, y, "M5  " + M5Line() + StringFormat(" | zones %d", ArraySize(g_zones)), clrSilver); y += dy + 4;
+   // AI
+   PanelLabel("h_ai", x, y, StringFormat("AI  %s%s   (score = weight of evidence, not win %%)", g_aiTime == "" ? "no answer yet" : g_aiTime,
+              g_aiModel == "" ? "" : "  " + g_aiModel), head, 8, true); y += dy - 3;
+   PanelLabel("buy", x, y, StringFormat("BUY  %3d   %s %s   %s", g_lastBuy, g_sideSetup[0], g_sideZone[0], StringSubstr(g_sideReason[0], 0, 55)),
+              g_lastBuy > g_lastSell ? clrMediumSeaGreen : dim, 9, g_lastBuy > g_lastSell); y += dy;
+   PanelLabel("sell", x, y, StringFormat("SELL %3d   %s %s   %s", g_lastSell, g_sideSetup[1], g_sideZone[1], StringSubstr(g_sideReason[1], 0, 55)),
+              g_lastSell > g_lastBuy ? clrTomato : dim, 9, g_lastSell > g_lastBuy); y += dy;
+   PanelLabel("plan", x, y, "Plan  " + planTxt, g_plan.active ? InpClrEntry : dim); y += dy;
+   PanelLabel("note", x, y, StringSubstr(g_plan.note, 0, 70), clrLightSteelBlue); y += dy + 4;
+   // confirmation
+   PanelLabel("h_chk", x, y, "CONFIRMATION BEFORE MARKET ORDER", head, 8, true); y += dy - 3;
+   string names[4] = {"closed M5 bar", "distance to entry", "setup valid", "signal fresh"};
+   for(int k = 0; k < 4; k++)
+     {
+      string txt = g_plan.active ? (g_chk[k] ? "[v] " : "[x] ") + names[k] + ":  " + g_chkTxt[k] : "[ ] " + names[k];
+      PanelLabel("chk" + IntegerToString(k), x, y, StringSubstr(txt, 0, 82), g_plan.active ? (g_chk[k] ? clrMediumSeaGreen : clrGold) : dim, 8);
+      y += dy - 2;
+     }
+   y += 4;
+   // risk
+   PanelLabel("h_risk", x, y, "RISK", head, 8, true); y += dy - 3;
+   string riskTxt = g_plan.active
+                    ? StringFormat("next order: lot %.2f (%s)  SL %s (%.1f ATR)  TP %s  RR %.1f  BE %.1fR  trail %.1fR/%.1f ATR",
+                                   g_pvLot, InpLotMode == LOT_RISK_PERCENT ? StringFormat("%.1f%% equity", InpRiskPercent) : "fixed",
+                                   D(g_pvSl), g_pvSlAtr, D(g_pvTp), InpRR, InpBeTriggerR, InpTrailStartR, InpTrailDistAtr)
+                    : StringFormat("rules: %s  SL = zone +%.1f ATR (%.1f-%.1f)  TP = %.1fR  BE %.1fR  trail %.1fR/%.1f ATR  max %d/day  loss %.1f%%",
+                                   InpLotMode == LOT_RISK_PERCENT ? StringFormat("%.1f%% / trade", InpRiskPercent) : StringFormat("lot %.2f", InpFixedLot),
+                                   InpSlBufferAtr, InpMinSlAtr, InpMaxSlAtr, InpRR, InpBeTriggerR, InpTrailStartR, InpTrailDistAtr, InpMaxTradesPerDay, InpMaxDailyLossPct);
+   PanelLabel("risk", x, y, StringSubstr(riskTxt, 0, 90), clrSilver, 8); y += dy - 2;
+   PanelLabel("pos", x, y, "position: " + PositionLine(), clrSilver, 8); y += dy + 4;
+   // AI cost / gate
+   PanelLabel("h_cost", x, y, "AI CALLS & COST", head, 8, true); y += dy - 3;
+   PanelLabel("cost", x, y, StringFormat("today %d/%d calls   %.4f USD%s   next call: %s", g_callsToday, InpMaxCallsPerDay, g_costToday,
+              g_budget > 0 ? StringFormat("   dashboard %.3f/%.2f USD", g_spent, g_budget) : "", g_gate == "" ? "-" : StringSubstr(g_gate, 0, 40)), clrSilver, 8);
    y += dy;
-   PanelLabel("score", x, y, StringFormat("AI score   BUY %d   /   SELL %d", g_lastBuy, g_lastSell),
-              g_lastBuy > g_lastSell ? clrMediumSeaGreen : (g_lastSell > g_lastBuy ? clrTomato : clrSilver), 10, true);
-   y += dy;
-   PanelLabel("plan", x, y, "Plan: " + planTxt, g_plan.active ? InpClrEntry : clrGray);
-   y += dy;
-   PanelLabel("note", x, y, StringSubstr(g_plan.note, 0, 60), clrLightSteelBlue);
-   y += dy;
-   PanelLabel("struct", x, y, StringFormat("M5 structure %s   zones %d   position %d   P/L %.2f", TrendName(g_m5.trend),
-              ArraySize(g_zones), pos, GetFloatingPL()), clrSilver);
-   y += dy;
-   PanelLabel("cost", x, y, StringFormat("AI calls today %d   cost %.4f USD", g_callsToday, g_costToday), clrSilver);
-   y += dy;
-   PanelLabel("reason", x, y, StringSubstr(g_reason, 0, 64), StatusColor());
+   if(g_status == "AI OFFLINE" && TimeCurrent() < g_failUntil)
+     { PanelLabel("off", x, y, StringFormat("AI unavailable - no new orders until %s (open positions keep SL/TP/trailing)", TimeToString(g_failUntil, TIME_MINUTES)), clrTomato, 8); y += dy; }
+   else PanelLabel("off", x, y, " ", dim, 8);
+   PanelLabel("reason", x, y, StringSubstr(g_reason, 0, 90), StatusColor()); y += dy;
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, y - 18 + 4);
    ChartRedraw();
   }
 //+------------------------------------------------------------------+

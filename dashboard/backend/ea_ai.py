@@ -173,7 +173,12 @@ def finalize(ai, req, c):
     zones = {str(z.get("id")): z for z in req.get("zones") or [] if z.get("id")}
     out = {"decision": "NONE", "buy_score": int(ai["buy"]["score"]), "sell_score": int(ai["sell"]["score"]),
            "setup": "none", "zone_id": "", "entry": 0.0, "invalidation": 0.0, "zone_low": 0.0, "zone_high": 0.0,
-           "valid_bars": 0, "note": str(ai.get("note") or "")[:200], "reject": ""}
+           "valid_bars": 0, "note": str(ai.get("note") or "")[:200], "reject": "",
+           # per-side detail for the EA panel (what each side would trade and why)
+           "buy_setup": str(ai["buy"].get("setup") or "none"), "buy_zone": str(ai["buy"].get("zone_id") or ""),
+           "buy_reason": str(ai["buy"].get("reason") or "")[:120],
+           "sell_setup": str(ai["sell"].get("setup") or "none"), "sell_zone": str(ai["sell"].get("zone_id") or ""),
+           "sell_reason": str(ai["sell"].get("reason") or "")[:120]}
     side = ai.get("decision")
     if side not in ("BUY", "SELL"):
         out["reject"] = "AI เลือก NONE"
@@ -255,7 +260,8 @@ def decide(req, ai_settings, headers_fn, overrides=None):
         _log(plan_id, req, model, ai, res, err, cost, tin, tout, time.time() - t0)
     if err:
         return {"ok": False, "error": err, "plan_id": plan_id, "cost_usd": cost}
-    return {"ok": True, "plan_id": plan_id, "model": model, "cost_usd": cost, **res}
+    return {"ok": True, "plan_id": plan_id, "model": model, "cost_usd": cost,
+            "spent_today": round(spent_today(), 4), "budget": float(c.get("daily_budget_usd") or 0), **res}
 
 
 def _log(plan_id, req, model, ai, res, err, cost, tin, tout, secs):

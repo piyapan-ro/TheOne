@@ -9,6 +9,7 @@ if not exist "..\.venv\Scripts\python.exe" (
 if not exist "..\data" mkdir "..\data"
 start "" /min cmd /c "timeout /t 4 >nul & start http://127.0.0.1:8000"
 title AI Trader Dashboard
+set PYTHONUNBUFFERED=1
 echo AI Trader Dashboard  ->  http://127.0.0.1:8000
 echo Output goes to data\dashboard.log. Close this window to stop.
 :loop

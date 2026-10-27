@@ -61,7 +61,14 @@ class LiveBroker:
     def ensure(self):
         with self.lock:
             if mt5.terminal_info() is None:
-                return self.connect()
+                if not getattr(self, "_lost", False):  # log the drop once, with the reason
+                    self._lost = True
+                    print(f"[MT5] {time.strftime('%Y-%m-%d %H:%M:%S')} connection to the terminal lost ({mt5.last_error()}) - reconnecting")
+                ok = self.connect()
+                if ok:
+                    self._lost = False
+                    print(f"[MT5] {time.strftime('%Y-%m-%d %H:%M:%S')} reconnected")
+                return ok
             return True
 
     def status(self):

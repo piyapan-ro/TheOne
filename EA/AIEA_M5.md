@@ -129,7 +129,7 @@ Strategy Tester ของ MT5 ไม่อนุญาตให้ใช้ WebR
 1. เปิด Dashboard (`dashboard\start.bat`) และใส่ API Key ในหน้า Settings
 2. MT5 → Tools → Options → Expert Advisors → ติ๊ก *Allow WebRequest for listed URL* แล้วเพิ่ม `http://127.0.0.1:8000`
 3. คอมไพล์ `EA/AIEA_M5.mq5` ใน MetaEditor แล้วลากลงกราฟ XAUUSD (timeframe ใดก็ได้ EA อ่าน M5/H1/H4 เอง)
-4. ใส่ `InpApiToken` = ข้อความในไฟล์ `dashboard\data\api_token.txt`
+4. ไม่ต้องใส่ token: Dashboard เขียน token ให้ที่ `%APPDATA%\MetaQuotes\Terminal\Common\Files\AIEA_token.txt` และ EA อ่านเองเมื่อ `InpApiToken` ว่าง (ใส่ `InpApiToken` เฉพาะกรณี Dashboard อยู่คนละเครื่อง)
 5. ทดสอบบนบัญชี Demo ก่อน (WebRequest ใช้ใน Strategy Tester ไม่ได้)
 
 ค่าฝั่ง AI ปรับได้ที่ `POST /api/ea/config` (หรือแก้ `dashboard\data\ea_ai.json`): `model` (ว่าง = ใช้รุ่นเดียวกับหน้า Settings), `effort`, `min_score`, `min_gap`, `max_wait_atr`, `daily_budget_usd`

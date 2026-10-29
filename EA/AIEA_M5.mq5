@@ -29,7 +29,7 @@ enum ENUM_TESTER_MODE
 
 input group "=== AI bridge (Dashboard) ==="
 input string          InpBridgeUrl        = "http://127.0.0.1:8000"; // Dashboard URL (add to WebRequest list)
-input string          InpApiToken         = "";              // API token: dashboard\data\api_token.txt
+input string          InpApiToken         = "";              // API token (empty = read Common\Files\AIEA_token.txt)
 input int             InpTimeoutMs        = 60000;           // AI request timeout (ms)
 input int             InpRetryMinutes     = 5;               // After an AI error: no new orders for N minutes
 
@@ -169,6 +169,7 @@ int       g_callsToday = 0;
 int       g_callsDay = -1;
 double    g_costToday = 0.0;
 int       g_lastBuy = 0, g_lastSell = 0;
+string    g_token = "";                                  // API token in use (input or Common\Files\AIEA_token.txt)
 string    g_aiTime = "", g_aiModel = "";                 // last AI answer
 string    g_sideSetup[2], g_sideZone[2], g_sideReason[2]; // [0]=BUY [1]=SELL
 double    g_budget = 0.0, g_spent = 0.0;                 // Dashboard daily budget / spent (USD)
@@ -199,8 +200,15 @@ int OnInit()
                   (InpTesterMode == TESTER_EXPORT ? "EXPORT requests to Common\\Files\\" + InpTesterFile :
                    StringFormat("REPLAY %d AI answers from Common\\Files\\%s", ArraySize(g_rpKey), InpReplayFile)));
      }
-   else if(InpApiToken == "")
-      Print("AIEA: InpApiToken is empty - copy it from dashboard\\data\\api_token.txt");
+   else
+     {
+      g_token = InpApiToken;
+      if(g_token == "") g_token = ReadCommonFile("AIEA_token.txt");
+      if(g_token == "")
+         Print("AIEA: no API token - start the Dashboard once (it writes Common\\Files\\AIEA_token.txt) or set InpApiToken");
+      else
+         Print("AIEA: API token ", InpApiToken == "" ? "loaded from Common\\Files\\AIEA_token.txt" : "from InpApiToken");
+     }
    EventSetTimer(1);
    return(INIT_SUCCEEDED);
   }
@@ -1044,6 +1052,17 @@ void GetTodayStats(int &trades, double &closedPL, datetime &lastEntry)
 //+------------------------------------------------------------------+
 //| Helpers                                                          |
 //+------------------------------------------------------------------+
+// Read a one-line text file from MT5 Common\Files (shared by every terminal on this PC)
+string ReadCommonFile(const string name)
+  {
+   int h = FileOpen(name, FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE) return "";
+   string line = FileReadString(h);
+   FileClose(h);
+   StringTrimLeft(line); StringTrimRight(line);
+   return line;
+  }
+
 bool PostJson(const string path, const string body, const int timeoutMs, string &resp)
   {
    resp = "";
@@ -1052,7 +1071,8 @@ bool PostJson(const string path, const string body, const int timeoutMs, string 
    string rh;
    int len = StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
    if(len > 0) ArrayResize(data, len - 1);   // drop the trailing \0
-   string headers = "Content-Type: application/json\r\nX-AIT-Token: " + InpApiToken + "\r\n";
+   if(g_token == "") g_token = ReadCommonFile("AIEA_token.txt");   // dashboard may have started after the EA
+   string headers = "Content-Type: application/json\r\nX-AIT-Token: " + g_token + "\r\n";
    ResetLastError();
    int code = WebRequest("POST", InpBridgeUrl + path, headers, timeoutMs, data, result, rh);
    if(code == -1)

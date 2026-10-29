@@ -127,6 +127,24 @@ def _load_token():
 
 
 API_TOKEN = _load_token()
+
+
+def _share_token_with_mt5(token):
+    """Best effort: copy the token to MetaTrader's Common/Files so the EA can
+    read it itself (AIEA_M5 falls back to this file when InpApiToken is empty)."""
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return
+    d = os.path.join(appdata, "MetaQuotes", "Terminal", "Common", "Files")
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "AIEA_token.txt"), "w", encoding="utf-8") as f:
+            f.write(token)
+    except OSError:
+        pass
+
+
+_share_token_with_mt5(API_TOKEN)
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 
 

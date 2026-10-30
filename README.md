@@ -3,13 +3,13 @@
 | โฟลเดอร์ | เนื้อหา |
 |---|---|
 | `dashboard/` | AI Trader Dashboard (FastAPI + MT5) – ดู `dashboard/README.md` |
-| `EA/` | GoldScalper_M1.mq5, AIScalper_M1.mq5 (MetaTrader 5 Expert Advisors) |
+| `EA/` | **AIEA_M5.mq5 – AI EA (ดู `EA/AIEA_M5.md`)**, GoldScalper_M1.mq5, AIScalper_M1.mq5 (MetaTrader 5 Expert Advisors) |
 | `training/` | train_ai_scalper.py – เทรนโมเดล ONNX ให้ AIScalper |
 
 ## ติดตั้งบนเครื่องใหม่
 ```
-git clone https://github.com/<you>/ai-trader.git
-cd ai-trader\dashboard
+git clone https://github.com/<you>/TheOne.git
+cd TheOne\dashboard
 install.bat
 start.bat
 ```

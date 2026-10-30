@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 import ai_journal
 import ai_review
+import ea_ai
 import analytics
 import liquidity
 import optimizer
@@ -126,6 +127,24 @@ def _load_token():
 
 
 API_TOKEN = _load_token()
+
+
+def _share_token_with_mt5(token):
+    """Best effort: copy the token to MetaTrader's Common/Files so the EA can
+    read it itself (AIEA_M5 falls back to this file when InpApiToken is empty)."""
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return
+    d = os.path.join(appdata, "MetaQuotes", "Terminal", "Common", "Files")
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "AIEA_token.txt"), "w", encoding="utf-8") as f:
+            f.write(token)
+    except OSError:
+        pass
+
+
+_share_token_with_mt5(API_TOKEN)
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
 
 
@@ -1704,6 +1723,33 @@ def execute_plan(plan, origin="AI"):
 @app.post("/api/ai/execute")
 def ai_execute(body: dict = Body(...)):
     return execute_plan(body.get("plan") or {}, "AI")
+
+
+# ------------------------------------------------------------------ AI EA bridge (EA/AIEA_M5.mq5)
+@app.post("/api/ea/decide")
+def ea_decide(body: dict = Body(...)):
+    return ea_ai.decide(body, settings()["ai"], anthropic_headers)
+
+
+@app.post("/api/ea/report")
+def ea_report(body: dict = Body(...)):
+    return ea_ai.report(body)
+
+
+@app.get("/api/ea/stats")
+def ea_stats(days: int = 7):
+    return ea_ai.stats(days)
+
+
+@app.get("/api/ea/config")
+def ea_config_get():
+    return ea_ai.cfg()
+
+
+@app.post("/api/ea/config")
+def ea_config_set(body: dict = Body(...)):
+    allowed = set(store.DEFAULTS["ea_ai"])
+    return store.update("ea_ai", {k: v for k, v in body.items() if k in allowed})
 
 
 @app.get("/api/ai/journal")
